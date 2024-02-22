@@ -1,108 +1,13 @@
 #include "ymfm_opn.h"
 #include "ymfm_opm.h"
+#include "rf5c68.hpp"
+#include "ga20.hpp"
 
 #include <SDL.h>
-#include <cstdint>
+#include <zlib.h>
+#include <array>
 #include <cstdio>
 #include <vector>
-#include <zlib.h>
-
-
-
-class RF5C68 {
-public:
-    enum {
-        NUM_CHANNELS = 8,
-    };
-
-    void write_mem(uint16_t addr, uint8_t data) {
-        m_data[addr] = data;
-    }
-    void write_reg(uint8_t addr, uint8_t data) {
-        Channel& chan = m_chan[m_cbank];
-        switch (addr) {
-        case 0x00: // envelope
-            chan.env = data;
-            break;
-        case 0x01: // pan
-            chan.pan = data;
-            break;
-        case 0x02: // FDL
-            chan.step = (chan.step & 0xff00) | data;
-            break;
-        case 0x03: // FDH
-            chan.step = (chan.step & 0x00ff) | (data << 8);
-            break;
-        case 0x04: // LSL
-            chan.loopst = (chan.loopst & 0xff00) | data;
-            break;
-        case 0x05: // LSH
-            chan.loopst = (chan.loopst & 0x00ff) | (data << 8);
-            break;
-        case 0x06: // ST
-            chan.start = data;
-            if (!chan.enable) chan.addr = chan.start << (8 + 11);
-            break;
-        case 0x07: // control reg
-            m_enable = (data >> 7) & 1;
-            if (data & 0x40) m_cbank = data & 7;
-            else             m_wbank = data & 15;
-            break;
-        case 0x08: // channel on/off reg
-            for (size_t i = 0; i < NUM_CHANNELS; i++) {
-                m_chan[i].enable = (~data >> i) & 1;
-                if (!m_chan[i].enable) m_chan[i].addr = m_chan[i].start << (8 + 11);
-            }
-            break;
-        }
-    }
-    void generate(int* out) {
-        out[0] = 0;
-        out[1] = 0;
-        if (!m_enable) return;
-        for (uint32_t i = 0; i < NUM_CHANNELS; i++) {
-            Channel& chan = m_chan[i];
-            if (!chan.enable) continue;
-
-            int sample = m_data[(chan.addr >> 11) & 0xffff];
-            if (sample == 0xff) {
-                chan.addr = chan.loopst << 11;
-                sample = m_data[(chan.addr >> 11) & 0xffff];
-                if (sample == 0xff) break;
-            }
-            chan.addr += chan.step;
-
-            int lv = ((chan.pan >> 0) & 0x0f) * chan.env;
-            int rv = ((chan.pan >> 4) & 0x0f) * chan.env;
-            if (sample & 0x80) {
-                sample &= 0x7f;
-                out[0] += (sample * lv) >> 5;
-                out[1] += (sample * rv) >> 5;
-            }
-            else {
-                out[0] -= (sample * lv) >> 5;
-                out[1] -= (sample * rv) >> 5;
-            }
-        }
-    }
-
-private:
-    struct Channel {
-        uint8_t  enable;
-        uint8_t  env;
-        uint8_t  pan;
-        uint8_t  start;
-        uint32_t addr;
-        uint16_t step;
-        uint16_t loopst;
-    };
-
-    Channel m_chan[NUM_CHANNELS] = {};
-    uint8_t m_cbank              = 0;
-    uint8_t m_wbank              = 0;
-    bool    m_enable             = false;
-    uint8_t m_data[0x10000]      = {};
-};
 
 
 enum {
@@ -190,9 +95,10 @@ private:
     uint32_t             m_loop_pos;
     uint32_t             m_samples_left;
     float                m_volume;
+
 };
 
-
+// chips
 ymfm::ymfm_interface ym2612_interface;
 ymfm::ym3438         ym2612(ym2612_interface);
 uint32_t             ym2612_rate;
@@ -215,6 +121,11 @@ RF5C68 rf5c68;
 float  rf5c68_sample_pos = 0;
 float  rf5c68_step;
 int    rf5c68_out[2];
+
+GA20   ga20;
+float  ga20_sample_pos = 0;
+float  ga20_step;
+int    ga20_out[2];
 
 
 bool VGM::init(char const* filename) {
@@ -320,7 +231,7 @@ bool VGM::init(char const* filename) {
     }
     if (header.version >= 0x171 && header.ga20_clock) {
         printf("chip ga20   @ %u\n", header.ga20_clock);
-        printf("TODO\n");
+        ga20_step = header.ga20_clock / 4.0 / MIXRATE;
     }
 
     return true;
@@ -339,8 +250,8 @@ void VGM::command() {
         break;
 
     case 0xbf: // GA20, write value dd to register aa
-        next();
-        next();
+        b = next();
+        ga20.write_reg(b, next());
         break;
 
     case 0x52: // YM2612 port 0, write value dd to register aa
@@ -367,10 +278,23 @@ void VGM::command() {
         n |= next() << 8;
         n |= next() << 16;
         n |= next() << 24;
-        if (b == 0xc0) {
+        printf("data block %02x %04x\n", b, n);
+        if (b == 0xc0) { // rf5c68
             uint16_t addr = next();
             addr |= next() << 8;
             for (; n > 2; --n) rf5c68.write_mem(addr++, next());
+        }
+        else if (b == 0x93) { // ga20 rom
+            uint32_t rom = next();
+            rom |= next() << 8;
+            rom |= next() << 16;
+            rom |= next() << 24;
+
+            uint32_t addr = next();
+            addr |= next() << 8;
+            addr |= next() << 16;
+            addr |= next() << 24;
+            for (; n > 8; --n) ga20.write_mem(addr++, next());
         }
         else {
             printf("warning: unknown data block %02x %04x\n", b, n);
@@ -378,7 +302,7 @@ void VGM::command() {
         }
         break;
 
-    case 0x61: // Wait n samples
+    case 0x61: // wait n samples
         m_samples_left = next();
         m_samples_left |= next() << 8;
         break;
@@ -444,9 +368,8 @@ void VGM::render(float* buffer, uint32_t sample_count) {
                 ym2151.generate(&ym2151_out);
                 ym2151_sample_pos -= 1;
             }
-            buffer[0] += ym2151_out.data[0] * m_volume;
-            buffer[1] += ym2151_out.data[1] * m_volume;
-
+            buffer[0] += ym2151_out.data[0] * m_volume * 0.7;
+            buffer[1] += ym2151_out.data[1] * m_volume * 0.7;
 
             // ym2203
             ym2203_sample_pos += ym2203_rate / float(MIXRATE);
@@ -458,9 +381,9 @@ void VGM::render(float* buffer, uint32_t sample_count) {
             buffer[1] += ym2203_out.data[0] * m_volume;
             // ssg voice panning
             constexpr float PAN[] = {
-                0.6 * std::sqrt(0.5),
-                0.6 * std::sqrt(0.5 + 0.2),
-                0.6 * std::sqrt(0.5 - 0.2),
+                0.5 * std::sqrt(0.5),
+                0.5 * std::sqrt(0.5 + 0.2),
+                0.5 * std::sqrt(0.5 - 0.2),
             };
             buffer[0] += ym2203_out.data[1] * m_volume * PAN[0];
             buffer[1] += ym2203_out.data[1] * m_volume * PAN[0];
@@ -477,6 +400,15 @@ void VGM::render(float* buffer, uint32_t sample_count) {
             }
             buffer[0] += rf5c68_out[0] * m_volume;
             buffer[1] += rf5c68_out[1] * m_volume;
+
+            // rf5c68
+            ga20_sample_pos += ga20_step;
+            while (ga20_sample_pos >= 1) {
+                ga20.generate(ga20_out);
+                ga20_sample_pos -= 1;
+            }
+            buffer[0] += ga20_out[0] * m_volume;
+            buffer[1] += ga20_out[1] * m_volume;
 
             buffer += 2;
         }

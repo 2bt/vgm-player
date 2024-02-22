@@ -37,6 +37,8 @@ add_executable(vgm-player
     ymfm/src/ymfm_fm.ipp
 
     src/main.cpp
+    src/rf5c68.hpp
+    src/ga20.hpp
 )
 target_include_directories(vgm-player PRIVATE
     ymfm/src
