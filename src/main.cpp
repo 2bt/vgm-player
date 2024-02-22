@@ -1,4 +1,5 @@
 #include "ymfm_opn.h"
+#include "ymfm_opm.h"
 
 #include <SDL.h>
 #include <cstdint>
@@ -85,7 +86,6 @@ public:
         }
     }
 
-
 private:
     struct Channel {
         uint8_t  enable;
@@ -105,10 +105,8 @@ private:
 };
 
 
-
 enum {
-    MIXRATE     = 44100,
-    BUFFER_SIZE = 1024 * 2,
+    MIXRATE = 44100,
 };
 
 
@@ -189,28 +187,34 @@ private:
     bool                 m_done;
     std::vector<uint8_t> m_data;
     uint32_t             m_pos;
+    uint32_t             m_loop_pos;
     uint32_t             m_samples_left;
     float                m_volume;
 };
 
 
-RF5C68 rf5c68;
-
 ymfm::ymfm_interface ym2612_interface;
-ymfm::ym3438 ym2612(ym2612_interface);
-uint32_t     ym2612_rate;
+ymfm::ym3438         ym2612(ym2612_interface);
+uint32_t             ym2612_rate;
 ymfm::ymfm_output<2> ym2612_out;
-float ym2612_sample_pos;
+float                ym2612_sample_pos;
+
+ymfm::ymfm_interface ym2151_interface;
+ymfm::ym2151         ym2151(ym2151_interface);
+uint32_t             ym2151_rate;
+ymfm::ymfm_output<2> ym2151_out;
+float                ym2151_sample_pos;
 
 ymfm::ymfm_interface ym2203_interface;
-ymfm::ym2203 ym2203(ym2203_interface);
-uint32_t     ym2203_rate;
+ymfm::ym2203         ym2203(ym2203_interface);
+uint32_t             ym2203_rate;
 ymfm::ymfm_output<4> ym2203_out;
-float ym2203_sample_pos;
+float                ym2203_sample_pos;
 
-float rf5c68_sample_pos = 0;
-float rf5c68_step;
-int   rf5c68_out[2];
+RF5C68 rf5c68;
+float  rf5c68_sample_pos = 0;
+float  rf5c68_step;
+int    rf5c68_out[2];
 
 
 bool VGM::init(char const* filename) {
@@ -281,6 +285,10 @@ bool VGM::init(char const* filename) {
     m_pos          = 0x34 + header.data_offset;
     m_done         = false;
     m_samples_left = 0;
+    m_loop_pos     = header.loop_offset + 0x1c;
+    if (m_loop_pos == 0x1c || m_loop_pos >= m_data.size()) m_loop_pos = 0;
+
+
 
     // volume mod
     int v = header.volume_mod;
@@ -303,14 +311,15 @@ bool VGM::init(char const* filename) {
     }
     if (header.ym2151_clock) {
         printf("chip ym2151 @ %u\n", header.ym2151_clock);
-        printf("TODO\n");
+        ym2151.reset();
+        ym2151_rate = ym2151.sample_rate(header.ym2151_clock);
     }
     if (header.rf5c68_clock) {
         printf("chip rf5c68 @ %u\n", header.rf5c68_clock);
         rf5c68_step = header.rf5c68_clock / 384.0 / MIXRATE;
     }
     if (header.version >= 0x171 && header.ga20_clock) {
-        printf("chip ga20  @ %u\n", header.ga20_clock);
+        printf("chip ga20   @ %u\n", header.ga20_clock);
         printf("TODO\n");
     }
 
@@ -319,13 +328,36 @@ bool VGM::init(char const* filename) {
 
 
 void VGM::command() {
-    uint8_t cmd = next();
-    uint8_t  b = 0;
-    uint32_t n = 0;
+    uint8_t  cmd = next();
+    uint8_t  b   = 0;
+    uint32_t n   = 0;
     switch (cmd) {
+
     case 0xb0: // RF5C68, write value dd to register aa
         b = next();
         rf5c68.write_reg(b, next());
+        break;
+
+    case 0xbf: // GA20, write value dd to register aa
+        next();
+        next();
+        break;
+
+    case 0x52: // YM2612 port 0, write value dd to register aa
+        ym2612.write_address(next());
+        ym2612.write_data(next());
+        break;
+    case 0x53: // YM2612 port 1, write value dd to register aa
+        ym2612.write_address_hi(next());
+        ym2612.write_data_hi(next());
+        break;
+    case 0x54: // YM2151, write value dd to register aa
+        ym2151.write_address(next());
+        ym2151.write_data(next());
+        break;
+    case 0x55: // YM2203, write value dd to register aa
+        ym2203.write_address(next());
+        ym2203.write_data(next());
         break;
 
     case 0x67: // data block
@@ -338,28 +370,13 @@ void VGM::command() {
         if (b == 0xc0) {
             uint16_t addr = next();
             addr |= next() << 8;
-            for (; n > 2; ++addr, --n) rf5c68.write_mem(addr, next());
+            for (; n > 2; --n) rf5c68.write_mem(addr++, next());
         }
         else {
             printf("warning: unknown data block %02x %04x\n", b, n);
             m_pos += n;
         }
         break;
-
-    case 0x52: // YM2612 port 0, write value dd to register aa
-        ym2612.write_address(next());
-        ym2612.write_data(next());
-        break;
-    case 0x53: // YM2612 port 1, write value dd to register aa
-        ym2612.write_address_hi(next());
-        ym2612.write_data_hi(next());
-        break;
-
-    case 0x55: // YM2203, write value dd to register aa
-        ym2203.write_address(next());
-        ym2203.write_data(next());
-        break;
-
 
     case 0x61: // Wait n samples
         m_samples_left = next();
@@ -379,6 +396,11 @@ void VGM::command() {
         break;
 
     case 0x66: // end of sound data
+        if (m_loop_pos) {
+            printf("loop\n");
+            m_pos = m_loop_pos;
+            break;
+        }
         printf("EOF\n");
         m_done = true;
         break;
@@ -402,12 +424,6 @@ void VGM::render(float* buffer, uint32_t sample_count) {
             return;
         }
 
-        constexpr float PAN[] = {
-            std::sqrt(0.5),
-            std::sqrt(0.5 + 0.1),
-            std::sqrt(0.5 - 0.1),
-        };
-
         uint32_t samples = std::min(sample_count, m_samples_left);
         for (uint32_t i = 0; i < samples; ++i) {
             buffer[0] = 0;
@@ -422,6 +438,16 @@ void VGM::render(float* buffer, uint32_t sample_count) {
             buffer[0] += ym2612_out.data[0] * m_volume;
             buffer[1] += ym2612_out.data[1] * m_volume;
 
+            // ym2151
+            ym2151_sample_pos += ym2151_rate / float(MIXRATE);
+            while (ym2151_sample_pos >= 1) {
+                ym2151.generate(&ym2151_out);
+                ym2151_sample_pos -= 1;
+            }
+            buffer[0] += ym2151_out.data[0] * m_volume;
+            buffer[1] += ym2151_out.data[1] * m_volume;
+
+
             // ym2203
             ym2203_sample_pos += ym2203_rate / float(MIXRATE);
             while (ym2203_sample_pos >= 1) {
@@ -430,18 +456,21 @@ void VGM::render(float* buffer, uint32_t sample_count) {
             }
             buffer[0] += ym2203_out.data[0] * m_volume;
             buffer[1] += ym2203_out.data[0] * m_volume;
-
+            // ssg voice panning
+            constexpr float PAN[] = {
+                0.6 * std::sqrt(0.5),
+                0.6 * std::sqrt(0.5 + 0.2),
+                0.6 * std::sqrt(0.5 - 0.2),
+            };
             buffer[0] += ym2203_out.data[1] * m_volume * PAN[0];
             buffer[1] += ym2203_out.data[1] * m_volume * PAN[0];
-
             buffer[0] += ym2203_out.data[2] * m_volume * PAN[1];
             buffer[1] += ym2203_out.data[2] * m_volume * PAN[2];
-
             buffer[0] += ym2203_out.data[3] * m_volume * PAN[2];
             buffer[1] += ym2203_out.data[3] * m_volume * PAN[1];
 
             // rf5c68
-            rf5c68_sample_pos += rf5c68_step ;
+            rf5c68_sample_pos += rf5c68_step;
             while (rf5c68_sample_pos >= 1) {
                 rf5c68.generate(rf5c68_out);
                 rf5c68_sample_pos -= 1;
@@ -479,7 +508,7 @@ int main(int argc, char** argv) {
     if (!vgm.init(filename)) return 1;
 
     SDL_AudioSpec spec = {
-        MIXRATE, AUDIO_F32, 2, 0, BUFFER_SIZE, 0, 0, &audio_callback, nullptr,
+        MIXRATE, AUDIO_F32, 2, 0, 1024 * 2, 0, 0, &audio_callback, nullptr,
     };
     SDL_Init(SDL_INIT_AUDIO);
     SDL_OpenAudio(&spec, nullptr);
