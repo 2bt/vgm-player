@@ -231,7 +231,7 @@ bool VGM::init(char const* filename) {
     }
     if (header.version >= 0x171 && header.ga20_clock) {
         printf("chip ga20   @ %u\n", header.ga20_clock);
-        ga20_step = header.ga20_clock / 4.0 / MIXRATE;
+        ga20_step = ga20.sample_rate(header.ga20_clock) / MIXRATE;
     }
 
     return true;
@@ -278,7 +278,6 @@ void VGM::command() {
         n |= next() << 8;
         n |= next() << 16;
         n |= next() << 24;
-        printf("data block %02x %04x\n", b, n);
         if (b == 0xc0) { // rf5c68
             uint16_t addr = next();
             addr |= next() << 8;
