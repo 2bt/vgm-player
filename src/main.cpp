@@ -95,7 +95,7 @@ private:
     uint32_t             m_loop_pos;
     uint32_t             m_samples_left;
     float                m_volume;
-
+    size_t               m_loop_counter;
 };
 
 // chips
@@ -188,17 +188,18 @@ bool VGM::init(char const* filename) {
         printf("error: wrong magic\n");
         return false;
     }
+    printf("version = %x\n", header.version);
     if (header.version < 0x151) {
         printf("error: version %x too old\n", header.version);
         return false;
     }
 
-    m_pos          = 0x34 + header.data_offset;
+    m_loop_counter = 0;
     m_done         = false;
+    m_pos          = 0x34 + header.data_offset;
     m_samples_left = 0;
     m_loop_pos     = header.loop_offset + 0x1c;
     if (m_loop_pos == 0x1c || m_loop_pos >= m_data.size()) m_loop_pos = 0;
-
 
 
     // volume mod
@@ -206,31 +207,32 @@ bool VGM::init(char const* filename) {
     if (v > 192) v = v - 192 - 63;
     if (v == -63) --v;
     m_volume = exp2(v / 64.0);
+    printf("volume = %f\n", m_volume);
     m_volume *= 0.00005;
 
     // init chips
     if (header.ym2612_clock) {
-        printf("chip ym2612 @ %u\n", header.ym2612_clock & 0x7fffffff);
+        printf("ym2612 clock = %u\n", header.ym2612_clock & 0x7fffffff);
         ym2612.reset();
         ym2612_rate = ym2612.sample_rate(header.ym2612_clock & 0x7fffffff);
     }
     if (header.ym2203_clock) {
-        printf("chip ym2203 @ %u\n", header.ym2203_clock);
+        printf("ym2203 clock = %u\n", header.ym2203_clock);
         ym2203.reset();
         ym2203.set_fidelity(ymfm::OPN_FIDELITY_MIN);
         ym2203_rate = ym2203.sample_rate(header.ym2203_clock);
     }
     if (header.ym2151_clock) {
-        printf("chip ym2151 @ %u\n", header.ym2151_clock);
+        printf("ym2151 clock = %u\n", header.ym2151_clock);
         ym2151.reset();
         ym2151_rate = ym2151.sample_rate(header.ym2151_clock);
     }
     if (header.rf5c68_clock) {
-        printf("chip rf5c68 @ %u\n", header.rf5c68_clock);
+        printf("rf5c68 clock = %u\n", header.rf5c68_clock);
         rf5c68_step = header.rf5c68_clock / 384.0 / MIXRATE;
     }
     if (header.version >= 0x171 && header.ga20_clock) {
-        printf("chip ga20   @ %u\n", header.ga20_clock);
+        printf("ga20 clock = %u\n", header.ga20_clock);
         ga20_step = ga20.sample_rate(header.ga20_clock) / MIXRATE;
     }
 
@@ -322,6 +324,8 @@ void VGM::command() {
         if (m_loop_pos) {
             printf("loop\n");
             m_pos = m_loop_pos;
+            ++m_loop_counter;
+            if (m_loop_counter == 3) m_done = true;
             break;
         }
         printf("EOF\n");
@@ -367,8 +371,8 @@ void VGM::render(float* buffer, uint32_t sample_count) {
                 ym2151.generate(&ym2151_out);
                 ym2151_sample_pos -= 1;
             }
-            buffer[0] += ym2151_out.data[0] * m_volume * 0.7;
-            buffer[1] += ym2151_out.data[1] * m_volume * 0.7;
+            buffer[0] += ym2151_out.data[0] * m_volume;
+            buffer[1] += ym2151_out.data[1] * m_volume;
 
             // ym2203
             ym2203_sample_pos += ym2203_rate / float(MIXRATE);

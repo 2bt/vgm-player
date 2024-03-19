@@ -46,15 +46,15 @@ public:
             acc += (s - 0x80) * chan.volume;
             chan.pos += chan.rate;
         }
-        out[0] = acc / 4;
-        out[1] = acc / 4;
+        out[0] = acc;
+        out[1] = acc;
     }
 
 private:
     struct Channel {
         uint32_t pos;
         uint32_t start;
-        uint16_t rate;
+        uint32_t rate;
         uint8_t  volume;
         bool     enabled;
     };
