@@ -26,14 +26,6 @@ inline int32_t clamp(int32_t value, int32_t minval, int32_t maxval)
 	return value;
 }
 
-enum keyon_type : uint32_t
-{
-	KEYON_NORMAL = 0,
-	KEYON_RHYTHM = 1,
-	KEYON_CSM = 2
-};
-
-
 enum envelope_state : uint32_t
 {
     EG_DEPRESS = 0,		// OPLL only; set EG_HAS_DEPRESS to enable
@@ -42,15 +34,6 @@ enum envelope_state : uint32_t
     EG_SUSTAIN = 3,
     EG_RELEASE = 4,
     EG_STATES = 5
-};
-
-enum access_class : uint32_t
-{
-    ACCESS_IO = 0,
-    ACCESS_ADPCM_A,
-    ACCESS_ADPCM_B,
-    ACCESS_PCM,
-    ACCESS_CLASSES
 };
 
 
@@ -70,75 +53,14 @@ struct opdata_cache
 	uint32_t multiple;                // multiple value (x.1, used to compute phase_step)
 	uint32_t eg_sustain;              // sustain level, shifted up to envelope values
     uint8_t eg_rate[EG_STATES];       // envelope rate, including KSR, [0;63]
-	uint8_t eg_shift = 0;             // envelope shift amount
 };
 
-
-
-class fm_registers_base
-{
-public:
-	// this value is returned from the write() function for rhythm channels
-	static constexpr uint32_t RHYTHM_CHANNEL = 0xff;
-
-	// this is the size of a full sin waveform
-	static constexpr uint32_t WAVEFORM_LENGTH = 0x400;
-
-	//
-	// the following constants need to be defined per family:
-	//          uint32_t OUTPUTS: The number of outputs exposed (1-4)
-	//         uint32_t CHANNELS: The number of channels on the chip
-	//     uint32_t ALL_CHANNELS: A bitmask of all channels
-	//        uint32_t OPERATORS: The number of operators on the chip
-	//        uint32_t WAVEFORMS: The number of waveforms offered
-	//        uint32_t REGISTERS: The number of 8-bit registers allocated
-	// uint32_t DEFAULT_PRESCALE: The starting clock prescale
-	// uint32_t EG_CLOCK_DIVIDER: The clock divider of the envelope generator
-	// uint32_t CSM_TRIGGER_MASK: Mask of channels to trigger in CSM mode
-	//         uint32_t REG_MODE: The address of the "mode" register controlling timers
-	//
-	// the following constants are uncommon:
-	//          bool DYNAMIC_OPS: True if ops/channel can be changed at runtime (OPL3+)
-	//       bool EG_HAS_DEPRESS: True if the chip has a DP ("depress"?) envelope stage (OPLL)
-	//           bool EG_HAS_SSG: True if the chip has SSG envelope support (OPN)
-	//
-	static constexpr bool DYNAMIC_OPS = false;
-	static constexpr bool EG_HAS_DEPRESS = false;
-	static constexpr bool EG_HAS_SSG = false;
-
-	// system-wide register defaults
-	uint32_t irq_reset() const                       { return 0; } // OPL only
-	uint32_t noise_enable() const                    { return 0; } // OPM only
-	uint32_t rhythm_enable() const                   { return 0; } // OPL only
-
-	// per-operator register defaults
-	uint32_t op_ssg_eg_enable(uint32_t opoffs) const { return 0; } // OPN(A) only
-	uint32_t op_ssg_eg_mode(uint32_t opoffs) const   { return 0; } // OPN(A) only
-
-protected:
-	// helper to encode four operator numbers into a 32-bit value in the
-	// operator maps for each register class
-	static constexpr uint32_t operator_list(uint8_t o1 = 0xff, uint8_t o2 = 0xff, uint8_t o3 = 0xff, uint8_t o4 = 0xff)
-	{
-		return o1 | (o2 << 8) | (o3 << 16) | (o4 << 24);
-	}
-
-	// helper to apply KSR to the raw ADSR rate, ignoring ksr if the
-	// raw value is 0, and clamping to 63
-	static constexpr uint32_t effective_rate(uint32_t rawrate, uint32_t ksr)
-	{
-		return (rawrate == 0) ? 0 : std::min<uint32_t>(rawrate + ksr, 63);
-	}
-};
-
-//
 // OPN register map:
 //
 //      System-wide registers:
 //           21 xxxxxxxx Test register
 //           22 ----x--- LFO enable [OPNA+ only]
 //              -----xxx LFO rate [OPNA+ only]
-
 //           28 x------- Key on/off operator 4
 //              -x------ Key on/off operator 3
 //              --x----- Key on/off operator 2
@@ -184,10 +106,10 @@ protected:
 
 
 
-class opn_registers_base : public fm_registers_base
+class opn_registers_base
 {
 public:
-    // constants
+	static constexpr uint32_t WAVEFORM_LENGTH = 0x400;
     static constexpr uint32_t OUTPUTS = 2;
     static constexpr uint32_t CHANNELS = 6;
     static constexpr uint32_t ALL_CHANNELS = (1 << CHANNELS) - 1;
@@ -197,7 +119,7 @@ public:
     static constexpr uint32_t REG_MODE = 0x27;
     static constexpr uint32_t DEFAULT_PRESCALE = 6;
     static constexpr uint32_t EG_CLOCK_DIVIDER = 3;
-    static constexpr bool EG_HAS_SSG = true;
+    static constexpr bool     EG_HAS_SSG = true;
     static constexpr uint32_t CSM_TRIGGER_MASK = 1 << 2;
 
     // constructor
@@ -246,9 +168,6 @@ public:
     // compute the phase step, given a PM value
     uint32_t compute_phase_step(uint32_t choffs, uint32_t opoffs, opdata_cache const &cache, int32_t lfo_raw_pm);
 
-    // log a key-on event
-    std::string log_keyon(uint32_t choffs, uint32_t opoffs);
-
     // system-wide registers
     uint32_t test() const                       { return byte(0x21, 0, 8); }
     uint32_t lfo_enable() const                 { return byte(0x22, 3, 1); }
@@ -283,7 +202,20 @@ public:
     uint32_t op_ssg_eg_enable(uint32_t opoffs) const { return byte(0x90, 3, 1, opoffs); }
     uint32_t op_ssg_eg_mode(uint32_t opoffs) const   { return byte(0x90, 0, 3, opoffs); }
 
-protected:
+private:
+	// helper to encode four operator numbers into a 32-bit value in the
+	// operator maps for each register class
+	static constexpr uint32_t operator_list(uint8_t o1 = 0xff, uint8_t o2 = 0xff, uint8_t o3 = 0xff, uint8_t o4 = 0xff)
+	{
+		return o1 | (o2 << 8) | (o3 << 16) | (o4 << 24);
+	}
+
+	// helper to apply KSR to the raw ADSR rate, ignoring ksr if the
+	// raw value is 0, and clamping to 63
+	static constexpr uint32_t effective_rate(uint32_t rawrate, uint32_t ksr)
+	{
+		return (rawrate == 0) ? 0 : std::min<uint32_t>(rawrate + ksr, 63);
+	}
     // return a bitfield extracted from a byte
     uint32_t byte(uint32_t offset, uint32_t start, uint32_t count, uint32_t extra_offset = 0) const
     {
@@ -302,6 +234,395 @@ protected:
     uint8_t m_regdata[REGISTERS];         // register data
     uint16_t m_waveform[WAVEFORMS][WAVEFORM_LENGTH]; // waveforms
 };
+
+
+//-------------------------------------------------
+//  abs_sin_attenuation - given a sin (phase) input
+//  where the range 0-2*PI is mapped onto 10 bits,
+//  return the absolute value of sin(input),
+//  logarithmically-adjusted and treated as an
+//  attenuation value, in 4.8 fixed point format
+//-------------------------------------------------
+
+inline uint32_t abs_sin_attenuation(uint32_t input)
+{
+	// the values here are stored as 4.8 logarithmic values for 1/4 phase
+	// this matches the internal format of the OPN chip, extracted from the die
+	static uint16_t const s_sin_table[256] =
+	{
+		0x859,0x6c3,0x607,0x58b,0x52e,0x4e4,0x4a6,0x471,0x443,0x41a,0x3f5,0x3d3,0x3b5,0x398,0x37e,0x365,
+		0x34e,0x339,0x324,0x311,0x2ff,0x2ed,0x2dc,0x2cd,0x2bd,0x2af,0x2a0,0x293,0x286,0x279,0x26d,0x261,
+		0x256,0x24b,0x240,0x236,0x22c,0x222,0x218,0x20f,0x206,0x1fd,0x1f5,0x1ec,0x1e4,0x1dc,0x1d4,0x1cd,
+		0x1c5,0x1be,0x1b7,0x1b0,0x1a9,0x1a2,0x19b,0x195,0x18f,0x188,0x182,0x17c,0x177,0x171,0x16b,0x166,
+		0x160,0x15b,0x155,0x150,0x14b,0x146,0x141,0x13c,0x137,0x133,0x12e,0x129,0x125,0x121,0x11c,0x118,
+		0x114,0x10f,0x10b,0x107,0x103,0x0ff,0x0fb,0x0f8,0x0f4,0x0f0,0x0ec,0x0e9,0x0e5,0x0e2,0x0de,0x0db,
+		0x0d7,0x0d4,0x0d1,0x0cd,0x0ca,0x0c7,0x0c4,0x0c1,0x0be,0x0bb,0x0b8,0x0b5,0x0b2,0x0af,0x0ac,0x0a9,
+		0x0a7,0x0a4,0x0a1,0x09f,0x09c,0x099,0x097,0x094,0x092,0x08f,0x08d,0x08a,0x088,0x086,0x083,0x081,
+		0x07f,0x07d,0x07a,0x078,0x076,0x074,0x072,0x070,0x06e,0x06c,0x06a,0x068,0x066,0x064,0x062,0x060,
+		0x05e,0x05c,0x05b,0x059,0x057,0x055,0x053,0x052,0x050,0x04e,0x04d,0x04b,0x04a,0x048,0x046,0x045,
+		0x043,0x042,0x040,0x03f,0x03e,0x03c,0x03b,0x039,0x038,0x037,0x035,0x034,0x033,0x031,0x030,0x02f,
+		0x02e,0x02d,0x02b,0x02a,0x029,0x028,0x027,0x026,0x025,0x024,0x023,0x022,0x021,0x020,0x01f,0x01e,
+		0x01d,0x01c,0x01b,0x01a,0x019,0x018,0x017,0x017,0x016,0x015,0x014,0x014,0x013,0x012,0x011,0x011,
+		0x010,0x00f,0x00f,0x00e,0x00d,0x00d,0x00c,0x00c,0x00b,0x00a,0x00a,0x009,0x009,0x008,0x008,0x007,
+		0x007,0x007,0x006,0x006,0x005,0x005,0x005,0x004,0x004,0x004,0x003,0x003,0x003,0x002,0x002,0x002,
+		0x002,0x001,0x001,0x001,0x001,0x001,0x001,0x001,0x000,0x000,0x000,0x000,0x000,0x000,0x000,0x000
+	};
+
+	// if the top bit is set, we're in the second half of the curve
+	// which is a mirror image, so invert the index
+	if (bitfield(input, 8))
+		input = ~input;
+
+	// return the value from the table
+	return s_sin_table[input & 0xff];
+}
+
+
+opn_registers_base::opn_registers_base() :
+    m_lfo_counter(0),
+    m_lfo_am(0)
+{
+    // create the waveforms
+    for (uint32_t index = 0; index < WAVEFORM_LENGTH; index++)
+        m_waveform[0][index] = abs_sin_attenuation(index) | (bitfield(index, 9) << 15);
+}
+
+//-------------------------------------------------
+//  reset - reset to initial state
+//-------------------------------------------------
+
+void opn_registers_base::reset()
+{
+    std::fill_n(&m_regdata[0], REGISTERS, 0);
+    // enable output on both channels by default
+    m_regdata[0xb4]  = m_regdata[0xb5]  = m_regdata[0xb6]  = 0xc0;
+    m_regdata[0x1b4] = m_regdata[0x1b5] = m_regdata[0x1b6] = 0xc0;
+}
+
+
+//-------------------------------------------------
+//  operator_map - return an array of operator
+//  indices for each channel; for OPN this is fixed
+//-------------------------------------------------
+
+void opn_registers_base::operator_map(operator_mapping &dest) const
+{
+    // Note that the channel index order is 0,2,1,3, so we bitswap the index.
+    //
+    // This is because the order in the map is:
+    //    carrier 1, carrier 2, modulator 1, modulator 2
+    //
+    // But when wiring up the connections, the more natural order is:
+    //    carrier 1, modulator 1, carrier 2, modulator 2
+    static const operator_mapping s_fixed_map =
+    { {
+        operator_list(  0,  6,  3,  9 ),  // Channel 0 operators
+        operator_list(  1,  7,  4, 10 ),  // Channel 1 operators
+        operator_list(  2,  8,  5, 11 ),  // Channel 2 operators
+        operator_list( 12, 18, 15, 21 ),  // Channel 3 operators
+        operator_list( 13, 19, 16, 22 ),  // Channel 4 operators
+        operator_list( 14, 20, 17, 23 ),  // Channel 5 operators
+    } };
+    dest = s_fixed_map;
+}
+
+
+//-------------------------------------------------
+//  write - handle writes to the register array
+//-------------------------------------------------
+
+bool opn_registers_base::write(uint16_t index, uint8_t data, uint32_t &channel, uint32_t &opmask)
+{
+    assert(index < REGISTERS);
+
+    // writes in the 0xa0-af/0x1a0-af region are handled as latched pairs
+    // borrow unused registers 0xb8-bf/0x1b8-bf as temporary holding locations
+    if ((index & 0xf0) == 0xa0)
+    {
+        if (bitfield(index, 0, 2) == 3)
+            return false;
+
+        uint32_t latchindex = 0xb8 | bitfield(index, 3);
+        latchindex |= index & 0x100;
+
+        // writes to the upper half just latch (only low 6 bits matter)
+        if (bitfield(index, 2))
+            m_regdata[latchindex] = data | 0x80;
+
+        // writes to the lower half only commit if the latch is there
+        else if (bitfield(m_regdata[latchindex], 7))
+        {
+            m_regdata[index] = data;
+            m_regdata[index | 4] = m_regdata[latchindex] & 0x3f;
+            m_regdata[latchindex] = 0;
+        }
+        return false;
+    }
+    else if ((index & 0xf8) == 0xb8)
+    {
+        // registers 0xb8-0xbf are used internally
+        return false;
+    }
+
+    // everything else is normal
+    m_regdata[index] = data;
+
+    // handle writes to the key on index
+    if (index == 0x28)
+    {
+        channel = bitfield(data, 0, 2);
+        if (channel == 3)
+            return false;
+        channel += bitfield(data, 2, 1) * 3;
+        opmask = bitfield(data, 4, 4);
+        return true;
+    }
+    return false;
+}
+
+
+//-------------------------------------------------
+//  clock_noise_and_lfo - clock the noise and LFO,
+//  handling clock division, depth, and waveform
+//  computations
+//-------------------------------------------------
+
+int32_t opn_registers_base::clock_noise_and_lfo()
+{
+    // OPN has no noise generation
+
+    // this table is based on converting the frequencies in the applications
+    // manual to clock dividers, based on the assumption of a 7-bit LFO value
+    static uint8_t const lfo_max_count[8] = { 109, 78, 72, 68, 63, 45, 9, 6 };
+    uint32_t subcount = uint8_t(m_lfo_counter++);
+
+    // when we cross the divider count, add enough to zero it and cause an
+    // increment at bit 8; the 7-bit value lives from bits 8-14
+    if (subcount >= lfo_max_count[lfo_rate()])
+    {
+        // note: to match the published values this should be 0x100 - subcount;
+        // however, tests on the hardware and nuked bear out an off-by-one
+        // error exists that causes the max LFO rate to be faster than published
+        m_lfo_counter += 0x101 - subcount;
+    }
+
+    // AM value is 7 bits, staring at bit 8; grab the low 6 directly
+    m_lfo_am = bitfield(m_lfo_counter, 8, 6);
+
+    // first half of the AM period (bit 6 == 0) is inverted
+    if (bitfield(m_lfo_counter, 8+6) == 0)
+        m_lfo_am ^= 0x3f;
+
+    // PM value is 5 bits, starting at bit 10; grab the low 3 directly
+    int32_t pm = bitfield(m_lfo_counter, 10, 3);
+
+    // PM is reflected based on bit 3
+    if (bitfield(m_lfo_counter, 10+3))
+        pm ^= 7;
+
+    // PM is negated based on bit 4
+    return bitfield(m_lfo_counter, 10+4) ? -pm : pm;
+}
+
+
+//-------------------------------------------------
+//  lfo_am_offset - return the AM offset from LFO
+//  for the given channel
+//-------------------------------------------------
+
+uint32_t opn_registers_base::lfo_am_offset(uint32_t choffs) const
+{
+    // shift value for AM sensitivity is [7, 3, 1, 0],
+    // mapping to values of [0, 1.4, 5.9, and 11.8dB]
+    uint32_t am_shift = (1 << (ch_lfo_am_sens(choffs) ^ 3)) - 1;
+
+    // QUESTION: max sensitivity should give 11.8dB range, but this value
+    // is directly added to an x.8 attenuation value, which will only give
+    // 126/256 or ~4.9dB range -- what am I missing? The calculation below
+    // matches several other emulators, including the Nuked implemenation.
+
+    // raw LFO AM value on OPN is 0-3F, scale that up by a factor of 2
+    // (giving 7 bits) before applying the final shift
+    return (m_lfo_am << 1) >> am_shift;
+}
+
+//-------------------------------------------------
+//  detune_adjustment - given a 5-bit key code
+//  value and a 3-bit detune parameter, return a
+//  6-bit signed phase displacement; this table
+//  has been verified against Nuked's equations,
+//  but the equations are rather complicated, so
+//  we'll keep the simplicity of the table
+//-------------------------------------------------
+
+inline int32_t detune_adjustment(uint32_t detune, uint32_t keycode)
+{
+	static uint8_t const s_detune_adjustment[32][4] =
+	{
+		{ 0,  0,  1,  2 },  { 0,  0,  1,  2 },  { 0,  0,  1,  2 },  { 0,  0,  1,  2 },
+		{ 0,  1,  2,  2 },  { 0,  1,  2,  3 },  { 0,  1,  2,  3 },  { 0,  1,  2,  3 },
+		{ 0,  1,  2,  4 },  { 0,  1,  3,  4 },  { 0,  1,  3,  4 },  { 0,  1,  3,  5 },
+		{ 0,  2,  4,  5 },  { 0,  2,  4,  6 },  { 0,  2,  4,  6 },  { 0,  2,  5,  7 },
+		{ 0,  2,  5,  8 },  { 0,  3,  6,  8 },  { 0,  3,  6,  9 },  { 0,  3,  7, 10 },
+		{ 0,  4,  8, 11 },  { 0,  4,  8, 12 },  { 0,  4,  9, 13 },  { 0,  5, 10, 14 },
+		{ 0,  5, 11, 16 },  { 0,  6, 12, 17 },  { 0,  6, 13, 19 },  { 0,  7, 14, 20 },
+		{ 0,  8, 16, 22 },  { 0,  8, 16, 22 },  { 0,  8, 16, 22 },  { 0,  8, 16, 22 }
+	};
+	int32_t result = s_detune_adjustment[keycode][detune & 3];
+	return bitfield(detune, 2) ? -result : result;
+}
+
+
+
+//-------------------------------------------------
+//  cache_operator_data - fill the operator cache
+//  with prefetched data
+//-------------------------------------------------
+
+void opn_registers_base::cache_operator_data(uint32_t choffs, uint32_t opoffs, opdata_cache &cache)
+{
+    // set up the easy stuff
+    cache.waveform = &m_waveform[0][0];
+
+    // get frequency from the channel
+    uint32_t block_freq = cache.block_freq = ch_block_freq(choffs);
+
+    // if multi-frequency mode is enabled and this is channel 2,
+    // fetch one of the special frequencies
+    if (multi_freq() && choffs == 2)
+    {
+        if (opoffs == 2)
+            block_freq = cache.block_freq = multi_block_freq(1);
+        else if (opoffs == 10)
+            block_freq = cache.block_freq = multi_block_freq(2);
+        else if (opoffs == 6)
+            block_freq = cache.block_freq = multi_block_freq(0);
+    }
+
+    // compute the keycode: block_freq is:
+    //
+    //     BBBFFFFFFFFFFF
+    //     ^^^^???
+    //
+    // the 5-bit keycode uses the top 4 bits plus a magic formula
+    // for the final bit
+    uint32_t keycode = bitfield(block_freq, 10, 4) << 1;
+
+    // lowest bit is determined by a mix of next lower FNUM bits
+    // according to this equation from the YM2608 manual:
+    //
+    //   (F11 & (F10 | F9 | F8)) | (!F11 & F10 & F9 & F8)
+    //
+    // for speed, we just look it up in a 16-bit constant
+    keycode |= bitfield(0xfe80, bitfield(block_freq, 7, 4));
+
+    // detune adjustment
+    cache.detune = detune_adjustment(op_detune(opoffs), keycode);
+
+    // multiple value, as an x.1 value (0 means 0.5)
+    cache.multiple = op_multiple(opoffs) * 2;
+    if (cache.multiple == 0)
+        cache.multiple = 1;
+
+    // phase step, or PHASE_STEP_DYNAMIC if PM is active; this depends on
+    // block_freq, detune, and multiple, so compute it after we've done those
+    cache.phase_step = opdata_cache::PHASE_STEP_DYNAMIC;
+
+    // total level, scaled by 8
+    cache.total_level = op_total_level(opoffs) << 3;
+
+    // 4-bit sustain level, but 15 means 31 so effectively 5 bits
+    cache.eg_sustain = op_sustain_level(opoffs);
+    cache.eg_sustain |= (cache.eg_sustain + 1) & 0x10;
+    cache.eg_sustain <<= 5;
+
+    // determine KSR adjustment for enevlope rates
+    uint32_t ksrval = keycode >> (op_ksr(opoffs) ^ 3);
+    cache.eg_rate[EG_ATTACK ] = effective_rate(op_attack_rate(opoffs) * 2, ksrval);
+    cache.eg_rate[EG_DECAY  ] = effective_rate(op_decay_rate(opoffs) * 2, ksrval);
+    cache.eg_rate[EG_SUSTAIN] = effective_rate(op_sustain_rate(opoffs) * 2, ksrval);
+    cache.eg_rate[EG_RELEASE] = effective_rate(op_release_rate(opoffs) * 4 + 2, ksrval);
+}
+
+//-------------------------------------------------
+//  opn_lfo_pm_phase_adjustment - given the 7 most
+//  significant frequency number bits, plus a 3-bit
+//  PM depth value and a signed 5-bit raw PM value,
+//  return a signed PM adjustment to the frequency;
+//  algorithm written to match Nuked behavior
+//-------------------------------------------------
+
+inline int32_t opn_lfo_pm_phase_adjustment(uint32_t fnum_bits, uint32_t pm_sensitivity, int32_t lfo_raw_pm)
+{
+	// this table encodes 2 shift values to apply to the top 7 bits
+	// of fnum; it is effectively a cheap multiply by a constant
+	// value containing 0-2 bits
+	static uint8_t const s_lfo_pm_shifts[8][8] =
+	{
+		{ 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77 },
+		{ 0x77, 0x77, 0x77, 0x77, 0x72, 0x72, 0x72, 0x72 },
+		{ 0x77, 0x77, 0x77, 0x72, 0x72, 0x72, 0x17, 0x17 },
+		{ 0x77, 0x77, 0x72, 0x72, 0x17, 0x17, 0x12, 0x12 },
+		{ 0x77, 0x77, 0x72, 0x17, 0x17, 0x17, 0x12, 0x07 },
+		{ 0x77, 0x77, 0x17, 0x12, 0x07, 0x07, 0x02, 0x01 },
+		{ 0x77, 0x77, 0x17, 0x12, 0x07, 0x07, 0x02, 0x01 },
+		{ 0x77, 0x77, 0x17, 0x12, 0x07, 0x07, 0x02, 0x01 }
+	};
+
+	// look up the relevant shifts
+	int32_t abs_pm = (lfo_raw_pm < 0) ? -lfo_raw_pm : lfo_raw_pm;
+	uint32_t const shifts = s_lfo_pm_shifts[pm_sensitivity][bitfield(abs_pm, 0, 3)];
+
+	// compute the adjustment
+	int32_t adjust = (fnum_bits >> bitfield(shifts, 0, 4)) + (fnum_bits >> bitfield(shifts, 4, 4));
+	if (pm_sensitivity > 5)
+		adjust <<= pm_sensitivity - 5;
+	adjust >>= 2;
+
+	// every 16 cycles it inverts sign
+	return (lfo_raw_pm < 0) ? -adjust : adjust;
+}
+
+
+
+//-------------------------------------------------
+//  compute_phase_step - compute the phase step
+//-------------------------------------------------
+
+uint32_t opn_registers_base::compute_phase_step(uint32_t choffs, uint32_t opoffs, opdata_cache const &cache, int32_t lfo_raw_pm)
+{
+    // OPN phase calculation has only a single detune parameter
+    // and uses FNUMs instead of keycodes
+
+    // extract frequency number (low 11 bits of block_freq)
+    uint32_t fnum = bitfield(cache.block_freq, 0, 11) << 1;
+
+    // if there's a non-zero PM sensitivity, compute the adjustment
+    uint32_t pm_sensitivity = ch_lfo_pm_sens(choffs);
+    if (pm_sensitivity != 0)
+    {
+        // apply the phase adjustment based on the upper 7 bits
+        // of FNUM and the PM depth parameters
+        fnum += opn_lfo_pm_phase_adjustment(bitfield(cache.block_freq, 4, 7), pm_sensitivity, lfo_raw_pm);
+
+        // keep fnum to 12 bits
+        fnum &= 0xfff;
+    }
+
+    // apply block shift to compute phase step
+    uint32_t block = bitfield(cache.block_freq, 11, 3);
+    uint32_t phase_step = (fnum << block) >> 2;
+
+    // apply detune based on the keycode
+    phase_step += cache.detune;
+
+    // clamp to 17 bits in case detune overflows
+    // QUESTION: is this specific to the YM2612/3438?
+    phase_step &= 0x1ffff;
+
+    // apply frequency multiplier (which is cached as an x.1 value)
+    return (phase_step * cache.multiple) >> 1;
+}
 
 
 class fm_engine;
@@ -342,9 +663,6 @@ public:
 	// compute operator volume
 	int32_t compute_volume(uint32_t phase, uint32_t am_offset) const;
 
-	// compute volume for the OPM noise channel
-	int32_t compute_noise_volume(uint32_t am_offset) const;
-
 	// key state control
 	void keyonoff(bool on);
 
@@ -353,7 +671,6 @@ public:
 
 private:
 	void start_attack(bool is_restart = false);
-	void start_release();
 
 	// clock phases
 	void clock_ssg_eg_state();
@@ -589,47 +906,6 @@ protected:
 
 /////////////////////////////
 
-//-------------------------------------------------
-//  abs_sin_attenuation - given a sin (phase) input
-//  where the range 0-2*PI is mapped onto 10 bits,
-//  return the absolute value of sin(input),
-//  logarithmically-adjusted and treated as an
-//  attenuation value, in 4.8 fixed point format
-//-------------------------------------------------
-
-inline uint32_t abs_sin_attenuation(uint32_t input)
-{
-	// the values here are stored as 4.8 logarithmic values for 1/4 phase
-	// this matches the internal format of the OPN chip, extracted from the die
-	static uint16_t const s_sin_table[256] =
-	{
-		0x859,0x6c3,0x607,0x58b,0x52e,0x4e4,0x4a6,0x471,0x443,0x41a,0x3f5,0x3d3,0x3b5,0x398,0x37e,0x365,
-		0x34e,0x339,0x324,0x311,0x2ff,0x2ed,0x2dc,0x2cd,0x2bd,0x2af,0x2a0,0x293,0x286,0x279,0x26d,0x261,
-		0x256,0x24b,0x240,0x236,0x22c,0x222,0x218,0x20f,0x206,0x1fd,0x1f5,0x1ec,0x1e4,0x1dc,0x1d4,0x1cd,
-		0x1c5,0x1be,0x1b7,0x1b0,0x1a9,0x1a2,0x19b,0x195,0x18f,0x188,0x182,0x17c,0x177,0x171,0x16b,0x166,
-		0x160,0x15b,0x155,0x150,0x14b,0x146,0x141,0x13c,0x137,0x133,0x12e,0x129,0x125,0x121,0x11c,0x118,
-		0x114,0x10f,0x10b,0x107,0x103,0x0ff,0x0fb,0x0f8,0x0f4,0x0f0,0x0ec,0x0e9,0x0e5,0x0e2,0x0de,0x0db,
-		0x0d7,0x0d4,0x0d1,0x0cd,0x0ca,0x0c7,0x0c4,0x0c1,0x0be,0x0bb,0x0b8,0x0b5,0x0b2,0x0af,0x0ac,0x0a9,
-		0x0a7,0x0a4,0x0a1,0x09f,0x09c,0x099,0x097,0x094,0x092,0x08f,0x08d,0x08a,0x088,0x086,0x083,0x081,
-		0x07f,0x07d,0x07a,0x078,0x076,0x074,0x072,0x070,0x06e,0x06c,0x06a,0x068,0x066,0x064,0x062,0x060,
-		0x05e,0x05c,0x05b,0x059,0x057,0x055,0x053,0x052,0x050,0x04e,0x04d,0x04b,0x04a,0x048,0x046,0x045,
-		0x043,0x042,0x040,0x03f,0x03e,0x03c,0x03b,0x039,0x038,0x037,0x035,0x034,0x033,0x031,0x030,0x02f,
-		0x02e,0x02d,0x02b,0x02a,0x029,0x028,0x027,0x026,0x025,0x024,0x023,0x022,0x021,0x020,0x01f,0x01e,
-		0x01d,0x01c,0x01b,0x01a,0x019,0x018,0x017,0x017,0x016,0x015,0x014,0x014,0x013,0x012,0x011,0x011,
-		0x010,0x00f,0x00f,0x00e,0x00d,0x00d,0x00c,0x00c,0x00b,0x00a,0x00a,0x009,0x009,0x008,0x008,0x007,
-		0x007,0x007,0x006,0x006,0x005,0x005,0x005,0x004,0x004,0x004,0x003,0x003,0x003,0x002,0x002,0x002,
-		0x002,0x001,0x001,0x001,0x001,0x001,0x001,0x001,0x000,0x000,0x000,0x000,0x000,0x000,0x000,0x000
-	};
-
-	// if the top bit is set, we're in the second half of the curve
-	// which is a mirror image, so invert the index
-	if (bitfield(input, 8))
-		input = ~input;
-
-	// return the value from the table
-	return s_sin_table[input & 0xff];
-}
-
 
 //-------------------------------------------------
 //  attenuation_to_volume - given a 5.8 fixed point
@@ -721,73 +997,6 @@ inline uint32_t attenuation_increment(uint32_t rate, uint32_t index)
 }
 
 
-//-------------------------------------------------
-//  detune_adjustment - given a 5-bit key code
-//  value and a 3-bit detune parameter, return a
-//  6-bit signed phase displacement; this table
-//  has been verified against Nuked's equations,
-//  but the equations are rather complicated, so
-//  we'll keep the simplicity of the table
-//-------------------------------------------------
-
-inline int32_t detune_adjustment(uint32_t detune, uint32_t keycode)
-{
-	static uint8_t const s_detune_adjustment[32][4] =
-	{
-		{ 0,  0,  1,  2 },  { 0,  0,  1,  2 },  { 0,  0,  1,  2 },  { 0,  0,  1,  2 },
-		{ 0,  1,  2,  2 },  { 0,  1,  2,  3 },  { 0,  1,  2,  3 },  { 0,  1,  2,  3 },
-		{ 0,  1,  2,  4 },  { 0,  1,  3,  4 },  { 0,  1,  3,  4 },  { 0,  1,  3,  5 },
-		{ 0,  2,  4,  5 },  { 0,  2,  4,  6 },  { 0,  2,  4,  6 },  { 0,  2,  5,  7 },
-		{ 0,  2,  5,  8 },  { 0,  3,  6,  8 },  { 0,  3,  6,  9 },  { 0,  3,  7, 10 },
-		{ 0,  4,  8, 11 },  { 0,  4,  8, 12 },  { 0,  4,  9, 13 },  { 0,  5, 10, 14 },
-		{ 0,  5, 11, 16 },  { 0,  6, 12, 17 },  { 0,  6, 13, 19 },  { 0,  7, 14, 20 },
-		{ 0,  8, 16, 22 },  { 0,  8, 16, 22 },  { 0,  8, 16, 22 },  { 0,  8, 16, 22 }
-	};
-	int32_t result = s_detune_adjustment[keycode][detune & 3];
-	return bitfield(detune, 2) ? -result : result;
-}
-
-
-
-//-------------------------------------------------
-//  opn_lfo_pm_phase_adjustment - given the 7 most
-//  significant frequency number bits, plus a 3-bit
-//  PM depth value and a signed 5-bit raw PM value,
-//  return a signed PM adjustment to the frequency;
-//  algorithm written to match Nuked behavior
-//-------------------------------------------------
-
-inline int32_t opn_lfo_pm_phase_adjustment(uint32_t fnum_bits, uint32_t pm_sensitivity, int32_t lfo_raw_pm)
-{
-	// this table encodes 2 shift values to apply to the top 7 bits
-	// of fnum; it is effectively a cheap multiply by a constant
-	// value containing 0-2 bits
-	static uint8_t const s_lfo_pm_shifts[8][8] =
-	{
-		{ 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77 },
-		{ 0x77, 0x77, 0x77, 0x77, 0x72, 0x72, 0x72, 0x72 },
-		{ 0x77, 0x77, 0x77, 0x72, 0x72, 0x72, 0x17, 0x17 },
-		{ 0x77, 0x77, 0x72, 0x72, 0x17, 0x17, 0x12, 0x12 },
-		{ 0x77, 0x77, 0x72, 0x17, 0x17, 0x17, 0x12, 0x07 },
-		{ 0x77, 0x77, 0x17, 0x12, 0x07, 0x07, 0x02, 0x01 },
-		{ 0x77, 0x77, 0x17, 0x12, 0x07, 0x07, 0x02, 0x01 },
-		{ 0x77, 0x77, 0x17, 0x12, 0x07, 0x07, 0x02, 0x01 }
-	};
-
-	// look up the relevant shifts
-	int32_t abs_pm = (lfo_raw_pm < 0) ? -lfo_raw_pm : lfo_raw_pm;
-	uint32_t const shifts = s_lfo_pm_shifts[pm_sensitivity][bitfield(abs_pm, 0, 3)];
-
-	// compute the adjustment
-	int32_t adjust = (fnum_bits >> bitfield(shifts, 0, 4)) + (fnum_bits >> bitfield(shifts, 4, 4));
-	if (pm_sensitivity > 5)
-		adjust <<= pm_sensitivity - 5;
-	adjust >>= 2;
-
-	// every 16 cycles it inverts sign
-	return (lfo_raw_pm < 0) ? -adjust : adjust;
-}
-
 
 
 //*********************************************************
@@ -842,7 +1051,9 @@ bool fm_operator::prepare()
 	if (m_keyon_live != m_key_state) {
 		m_key_state = m_keyon_live;
 		if (m_key_state) start_attack();
-		else          start_release();
+		else {
+            m_env_state = EG_RELEASE;
+        }
 	}
 
 	// we're active until we're quiet after the release
@@ -900,25 +1111,6 @@ int32_t fm_operator::compute_volume(uint32_t phase, uint32_t am_offset) const
 }
 
 
-//-------------------------------------------------
-//  compute_noise_volume - compute the 14-bit
-//  signed noise volume of this operator, given a
-//  noise input value and an AM offset
-//-------------------------------------------------
-
-int32_t fm_operator::compute_noise_volume(uint32_t am_offset) const
-{
-	// application manual says the logarithmic transform is not applied here, so we
-	// just use the raw envelope attenuation, inverted (since 0 attenuation should be
-	// maximum), and shift it up from a 10-bit value to an 11-bit value
-	int32_t result = (envelope_attenuation(am_offset) ^ 0x3ff) << 1;
-
-	// QUESTION: is AM applied still?
-
-	// negate based on the noise state
-	return bitfield(m_regs.noise_state(), 0) ? -result : result;
-}
-
 
 //-------------------------------------------------
 //  keyonoff - signal a key on/off event
@@ -959,18 +1151,6 @@ void fm_operator::start_attack(bool is_restart)
 	if (m_cache.eg_rate[EG_ATTACK] >= 62)
 		m_env_attenuation = 0;
 }
-
-
-//-------------------------------------------------
-//  start_release - start the release phase;
-//  called when a keyoff happens
-//-------------------------------------------------
-
-void fm_operator::start_release()
-{
-	m_env_state = EG_RELEASE;
-}
-
 
 
 //-------------------------------------------------
@@ -1099,10 +1279,6 @@ void fm_operator::clock_envelope(uint32_t env_counter)
 		// clamp the final attenuation
 		if (m_env_attenuation >= 0x400)
 			m_env_attenuation = 0x3ff;
-
-		// transition from depress to attack
-		if (opn_registers_base::EG_HAS_DEPRESS && m_env_state == EG_DEPRESS && m_env_attenuation >= 0x200)
-			start_attack();
 	}
 }
 
@@ -1132,7 +1308,7 @@ void fm_operator::clock_phase(int32_t lfo_raw_pm)
 
 uint32_t fm_operator::envelope_attenuation(uint32_t am_offset) const
 {
-	uint32_t result = m_env_attenuation >> m_cache.eg_shift;
+	uint32_t result = m_env_attenuation;
 
 	// invert if necessary due to SSG-EG
 	if (opn_registers_base::EG_HAS_SSG && m_ssg_inverted)
@@ -1322,16 +1498,9 @@ void fm_channel::output_4op(output_data &output, uint32_t rshift, int32_t clipma
 	opout[6] = opout[1] + opout[3];
 	opout[7] = opout[2] + opout[3];
 
-	// compute the 14-bit volume/value of operator 4; this could be a noise
-	// value on the OPM; all algorithms consume OP4 output at a minimum
-	int32_t result;
-	if (m_regs.noise_enable() && m_choffs == 7)
-		result = m_op[3]->compute_noise_volume(am_offset);
-	else
-	{
-		opmod = opout[bitfield(algorithm_ops, 4, 3)] >> 1;
-		result = m_op[3]->compute_volume(m_op[3]->phase() + opmod, am_offset);
-	}
+	// compute the 14-bit volume/value of operator 4; all algorithms consume OP4 output at a minimum
+    opmod = opout[bitfield(algorithm_ops, 4, 3)] >> 1;
+	int32_t result = m_op[3]->compute_volume(m_op[3]->phase() + opmod, am_offset);
 	result >>= rshift;
 
 	// optionally add OP1, OP2, OP3
@@ -1346,9 +1515,6 @@ void fm_channel::output_4op(output_data &output, uint32_t rshift, int32_t clipma
 	// add to the output
 	add_to_output(m_choffs, output, result);
 }
-
-
-
 
 
 //*********************************************************
@@ -1419,10 +1585,6 @@ uint32_t fm_engine::clock(uint32_t chanmask)
 	// also prepare every 4k samples to catch ending notes
 	if (m_modified_channels != 0 || m_prepare_count++ >= 4096)
 	{
-		// reassign operators to channels if dynamic
-		if (opn_registers_base::DYNAMIC_OPS)
-			assign_operators();
-
 		// call each channel to prepare
 		m_active_channels = 0;
 		for (uint32_t chnum = 0; chnum < CHANNELS; chnum++)
@@ -1682,285 +1844,7 @@ void ym2612::generate(output_data *output, uint32_t numsamples)
         output->data[1] = (output->data[1] * 128) * 64 / (6 * 65);
 	}
 }
-opn_registers_base::opn_registers_base() :
-    m_lfo_counter(0),
-    m_lfo_am(0)
-{
-    // create the waveforms
-    for (uint32_t index = 0; index < WAVEFORM_LENGTH; index++)
-        m_waveform[0][index] = abs_sin_attenuation(index) | (bitfield(index, 9) << 15);
-}
 
-
-//-------------------------------------------------
-//  reset - reset to initial state
-//-------------------------------------------------
-
-void opn_registers_base::reset()
-{
-    std::fill_n(&m_regdata[0], REGISTERS, 0);
-    // enable output on both channels by default
-    m_regdata[0xb4]  = m_regdata[0xb5]  = m_regdata[0xb6]  = 0xc0;
-    m_regdata[0x1b4] = m_regdata[0x1b5] = m_regdata[0x1b6] = 0xc0;
-}
-
-
-//-------------------------------------------------
-//  operator_map - return an array of operator
-//  indices for each channel; for OPN this is fixed
-//-------------------------------------------------
-
-void opn_registers_base::operator_map(operator_mapping &dest) const
-{
-    // Note that the channel index order is 0,2,1,3, so we bitswap the index.
-    //
-    // This is because the order in the map is:
-    //    carrier 1, carrier 2, modulator 1, modulator 2
-    //
-    // But when wiring up the connections, the more natural order is:
-    //    carrier 1, modulator 1, carrier 2, modulator 2
-    static const operator_mapping s_fixed_map =
-    { {
-        operator_list(  0,  6,  3,  9 ),  // Channel 0 operators
-        operator_list(  1,  7,  4, 10 ),  // Channel 1 operators
-        operator_list(  2,  8,  5, 11 ),  // Channel 2 operators
-        operator_list( 12, 18, 15, 21 ),  // Channel 3 operators
-        operator_list( 13, 19, 16, 22 ),  // Channel 4 operators
-        operator_list( 14, 20, 17, 23 ),  // Channel 5 operators
-    } };
-    dest = s_fixed_map;
-}
-
-
-//-------------------------------------------------
-//  write - handle writes to the register array
-//-------------------------------------------------
-
-bool opn_registers_base::write(uint16_t index, uint8_t data, uint32_t &channel, uint32_t &opmask)
-{
-    assert(index < REGISTERS);
-
-    // writes in the 0xa0-af/0x1a0-af region are handled as latched pairs
-    // borrow unused registers 0xb8-bf/0x1b8-bf as temporary holding locations
-    if ((index & 0xf0) == 0xa0)
-    {
-        if (bitfield(index, 0, 2) == 3)
-            return false;
-
-        uint32_t latchindex = 0xb8 | bitfield(index, 3);
-        latchindex |= index & 0x100;
-
-        // writes to the upper half just latch (only low 6 bits matter)
-        if (bitfield(index, 2))
-            m_regdata[latchindex] = data | 0x80;
-
-        // writes to the lower half only commit if the latch is there
-        else if (bitfield(m_regdata[latchindex], 7))
-        {
-            m_regdata[index] = data;
-            m_regdata[index | 4] = m_regdata[latchindex] & 0x3f;
-            m_regdata[latchindex] = 0;
-        }
-        return false;
-    }
-    else if ((index & 0xf8) == 0xb8)
-    {
-        // registers 0xb8-0xbf are used internally
-        return false;
-    }
-
-    // everything else is normal
-    m_regdata[index] = data;
-
-    // handle writes to the key on index
-    if (index == 0x28)
-    {
-        channel = bitfield(data, 0, 2);
-        if (channel == 3)
-            return false;
-        channel += bitfield(data, 2, 1) * 3;
-        opmask = bitfield(data, 4, 4);
-        return true;
-    }
-    return false;
-}
-
-
-//-------------------------------------------------
-//  clock_noise_and_lfo - clock the noise and LFO,
-//  handling clock division, depth, and waveform
-//  computations
-//-------------------------------------------------
-
-int32_t opn_registers_base::clock_noise_and_lfo()
-{
-    // OPN has no noise generation
-
-    // this table is based on converting the frequencies in the applications
-    // manual to clock dividers, based on the assumption of a 7-bit LFO value
-    static uint8_t const lfo_max_count[8] = { 109, 78, 72, 68, 63, 45, 9, 6 };
-    uint32_t subcount = uint8_t(m_lfo_counter++);
-
-    // when we cross the divider count, add enough to zero it and cause an
-    // increment at bit 8; the 7-bit value lives from bits 8-14
-    if (subcount >= lfo_max_count[lfo_rate()])
-    {
-        // note: to match the published values this should be 0x100 - subcount;
-        // however, tests on the hardware and nuked bear out an off-by-one
-        // error exists that causes the max LFO rate to be faster than published
-        m_lfo_counter += 0x101 - subcount;
-    }
-
-    // AM value is 7 bits, staring at bit 8; grab the low 6 directly
-    m_lfo_am = bitfield(m_lfo_counter, 8, 6);
-
-    // first half of the AM period (bit 6 == 0) is inverted
-    if (bitfield(m_lfo_counter, 8+6) == 0)
-        m_lfo_am ^= 0x3f;
-
-    // PM value is 5 bits, starting at bit 10; grab the low 3 directly
-    int32_t pm = bitfield(m_lfo_counter, 10, 3);
-
-    // PM is reflected based on bit 3
-    if (bitfield(m_lfo_counter, 10+3))
-        pm ^= 7;
-
-    // PM is negated based on bit 4
-    return bitfield(m_lfo_counter, 10+4) ? -pm : pm;
-}
-
-
-//-------------------------------------------------
-//  lfo_am_offset - return the AM offset from LFO
-//  for the given channel
-//-------------------------------------------------
-
-uint32_t opn_registers_base::lfo_am_offset(uint32_t choffs) const
-{
-    // shift value for AM sensitivity is [7, 3, 1, 0],
-    // mapping to values of [0, 1.4, 5.9, and 11.8dB]
-    uint32_t am_shift = (1 << (ch_lfo_am_sens(choffs) ^ 3)) - 1;
-
-    // QUESTION: max sensitivity should give 11.8dB range, but this value
-    // is directly added to an x.8 attenuation value, which will only give
-    // 126/256 or ~4.9dB range -- what am I missing? The calculation below
-    // matches several other emulators, including the Nuked implemenation.
-
-    // raw LFO AM value on OPN is 0-3F, scale that up by a factor of 2
-    // (giving 7 bits) before applying the final shift
-    return (m_lfo_am << 1) >> am_shift;
-}
-
-
-//-------------------------------------------------
-//  cache_operator_data - fill the operator cache
-//  with prefetched data
-//-------------------------------------------------
-
-void opn_registers_base::cache_operator_data(uint32_t choffs, uint32_t opoffs, opdata_cache &cache)
-{
-    // set up the easy stuff
-    cache.waveform = &m_waveform[0][0];
-
-    // get frequency from the channel
-    uint32_t block_freq = cache.block_freq = ch_block_freq(choffs);
-
-    // if multi-frequency mode is enabled and this is channel 2,
-    // fetch one of the special frequencies
-    if (multi_freq() && choffs == 2)
-    {
-        if (opoffs == 2)
-            block_freq = cache.block_freq = multi_block_freq(1);
-        else if (opoffs == 10)
-            block_freq = cache.block_freq = multi_block_freq(2);
-        else if (opoffs == 6)
-            block_freq = cache.block_freq = multi_block_freq(0);
-    }
-
-    // compute the keycode: block_freq is:
-    //
-    //     BBBFFFFFFFFFFF
-    //     ^^^^???
-    //
-    // the 5-bit keycode uses the top 4 bits plus a magic formula
-    // for the final bit
-    uint32_t keycode = bitfield(block_freq, 10, 4) << 1;
-
-    // lowest bit is determined by a mix of next lower FNUM bits
-    // according to this equation from the YM2608 manual:
-    //
-    //   (F11 & (F10 | F9 | F8)) | (!F11 & F10 & F9 & F8)
-    //
-    // for speed, we just look it up in a 16-bit constant
-    keycode |= bitfield(0xfe80, bitfield(block_freq, 7, 4));
-
-    // detune adjustment
-    cache.detune = detune_adjustment(op_detune(opoffs), keycode);
-
-    // multiple value, as an x.1 value (0 means 0.5)
-    cache.multiple = op_multiple(opoffs) * 2;
-    if (cache.multiple == 0)
-        cache.multiple = 1;
-
-    // phase step, or PHASE_STEP_DYNAMIC if PM is active; this depends on
-    // block_freq, detune, and multiple, so compute it after we've done those
-    cache.phase_step = opdata_cache::PHASE_STEP_DYNAMIC;
-
-    // total level, scaled by 8
-    cache.total_level = op_total_level(opoffs) << 3;
-
-    // 4-bit sustain level, but 15 means 31 so effectively 5 bits
-    cache.eg_sustain = op_sustain_level(opoffs);
-    cache.eg_sustain |= (cache.eg_sustain + 1) & 0x10;
-    cache.eg_sustain <<= 5;
-
-    // determine KSR adjustment for enevlope rates
-    uint32_t ksrval = keycode >> (op_ksr(opoffs) ^ 3);
-    cache.eg_rate[EG_ATTACK ] = effective_rate(op_attack_rate(opoffs) * 2, ksrval);
-    cache.eg_rate[EG_DECAY  ] = effective_rate(op_decay_rate(opoffs) * 2, ksrval);
-    cache.eg_rate[EG_SUSTAIN] = effective_rate(op_sustain_rate(opoffs) * 2, ksrval);
-    cache.eg_rate[EG_RELEASE] = effective_rate(op_release_rate(opoffs) * 4 + 2, ksrval);
-}
-
-
-//-------------------------------------------------
-//  compute_phase_step - compute the phase step
-//-------------------------------------------------
-
-uint32_t opn_registers_base::compute_phase_step(uint32_t choffs, uint32_t opoffs, opdata_cache const &cache, int32_t lfo_raw_pm)
-{
-    // OPN phase calculation has only a single detune parameter
-    // and uses FNUMs instead of keycodes
-
-    // extract frequency number (low 11 bits of block_freq)
-    uint32_t fnum = bitfield(cache.block_freq, 0, 11) << 1;
-
-    // if there's a non-zero PM sensitivity, compute the adjustment
-    uint32_t pm_sensitivity = ch_lfo_pm_sens(choffs);
-    if (pm_sensitivity != 0)
-    {
-        // apply the phase adjustment based on the upper 7 bits
-        // of FNUM and the PM depth parameters
-        fnum += opn_lfo_pm_phase_adjustment(bitfield(cache.block_freq, 4, 7), pm_sensitivity, lfo_raw_pm);
-
-        // keep fnum to 12 bits
-        fnum &= 0xfff;
-    }
-
-    // apply block shift to compute phase step
-    uint32_t block = bitfield(cache.block_freq, 11, 3);
-    uint32_t phase_step = (fnum << block) >> 2;
-
-    // apply detune based on the keycode
-    phase_step += cache.detune;
-
-    // clamp to 17 bits in case detune overflows
-    // QUESTION: is this specific to the YM2612/3438?
-    phase_step &= 0x1ffff;
-
-    // apply frequency multiplier (which is cached as an x.1 value)
-    return (phase_step * cache.multiple) >> 1;
-}
 
 
 } // namespace
