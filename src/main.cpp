@@ -2,9 +2,11 @@
 #include "ymfm_opm.h"
 #include "rf5c68.hpp"
 #include "ga20.hpp"
+#include "ym2612.hpp"
 
 #include <SDL.h>
 #include <zlib.h>
+#include <csignal>
 #include <array>
 #include <cstdio>
 #include <vector>
@@ -13,6 +15,80 @@
 enum {
     MIXRATE = 44100,
 };
+
+#define USE_MY2203 1
+
+class My2203 {
+public:
+    void set_clock(uint32_t clock) {
+        m_clock = clock;
+        m_inc = m_clock * (1.0f / MIXRATE / 32.0f);
+    }
+
+    void write_reg(uint8_t a, uint8_t v) {
+        m_reg[a] = v;
+
+        uint8_t ch = a & 0x3;
+        uint8_t op = (a >> 2) & 0x3;
+
+        switch (a) {
+        case 0x8: case 0x9: case 0xa: {
+            constexpr float N = 140.0f;
+            m_volume[ch] = (std::pow(N, (v & 0xf) * (1.0f / 15.0f)) - 1.0f) / (N - 1.0f);
+            m_volume[ch] *= 0.5f;
+            break;
+        }
+        default: break;
+        }
+    }
+
+    float render() {
+
+        float out = 0.0f;
+
+        // ssg
+        m_noise_count += m_inc;
+        int noise_period = m_reg[6] & 0x1f;
+        if (m_noise_count >= noise_period) {
+            m_noise_count -= noise_period;
+            m_noise_state ^= ((m_noise_state & 1) ^ ((m_noise_state >> 3) & 1)) << 17;
+            m_noise_state >>= 1;
+        }
+        for (int i = 0; i < 3; ++i) {
+            m_tone_count[i] += m_inc;
+            int period = m_reg[i * 2] | ((m_reg[i * 2 + 1] & 0xf) << 8);
+            if (m_tone_count[i] >= period) {
+                m_tone_count[i] -= period;
+            }
+            // tone
+            uint8_t ctrl = m_reg[7] >> i;
+            int amp = 0;
+            if (!(ctrl & 1)) {
+                amp = m_tone_count[i] * 2 < period ? -1 : 1;
+            }
+            // noise
+            if (!(ctrl & 8)) {
+                amp = m_noise_state & 1 ? -1 : 1;
+            }
+            out += amp * m_volume[i];
+        }
+
+        return out * 0.5f;
+    }
+
+private:
+    uint8_t  m_reg[256];
+    uint32_t m_clock;
+    float    m_inc;
+    float    m_volume[3];
+    float    m_tone_count[3];
+    float    m_noise_count;
+    uint32_t m_noise_state = 1;
+
+
+};
+
+My2203 my2203;
 
 
 #pragma pack(push, 1)
@@ -99,10 +175,14 @@ private:
 };
 
 // chips
-ymfm::ymfm_interface ym2612_interface;
-ymfm::ym3438         ym2612(ym2612_interface);
+//ymfm::ymfm_interface ym2612_interface;
+//ymfm::ym3438         ym2612(ym2612_interface);
+//uint32_t             ym2612_rate;
+//ymfm::ymfm_output<2> ym2612_out;
+//float                ym2612_sample_pos;
+foobar::ym2612       ym2612;
 uint32_t             ym2612_rate;
-ymfm::ymfm_output<2> ym2612_out;
+foobar::ymfm_output<2> ym2612_out;
 float                ym2612_sample_pos;
 
 ymfm::ymfm_interface ym2151_interface;
@@ -221,6 +301,7 @@ bool VGM::init(char const* filename) {
         ym2203.reset();
         ym2203.set_fidelity(ymfm::OPN_FIDELITY_MIN);
         ym2203_rate = ym2203.sample_rate(header.ym2203_clock);
+        my2203.set_clock(header.ym2203_clock);
     }
     if (header.ym2151_clock) {
         printf("ym2151 clock = %u\n", header.ym2151_clock);
@@ -239,6 +320,9 @@ bool VGM::init(char const* filename) {
     return true;
 }
 
+
+std::array<uint8_t, 256> reg_val;
+std::array<uint8_t, 256> reg_set;
 
 void VGM::command() {
     uint8_t  cmd = next();
@@ -269,10 +353,16 @@ void VGM::command() {
         ym2151.write_data(next());
         break;
     case 0x55: // YM2203, write value dd to register aa
-        ym2203.write_address(next());
-        ym2203.write_data(next());
+    {
+        uint8_t a = next();
+        uint8_t v = next();
+        reg_val[a] = v;
+        reg_set[a] = 1;
+        ym2203.write_address(a);
+        ym2203.write_data(v);
+        my2203.write_reg(a, v);
         break;
-
+    }
     case 0x67: // data block
         next();
         b = next();
@@ -337,6 +427,30 @@ void VGM::command() {
         m_done = true;
         break;
     }
+    if (m_samples_left < 10) m_samples_left = 0;
+    if (m_samples_left > 0) {
+        int maxi = -1;
+//        for (int i = 0; i < reg_set.size(); ++i) {
+        for (int i = 16; i < reg_set.size(); ++i) {
+            if (reg_set[i]) maxi = i;
+        }
+        if (maxi >= 0) {
+//            for (int i = 0; i <= maxi; ++i) {
+            printf(">");
+            for (int i = 16; i <= maxi; ++i) {
+                printf("%02x", i);
+            }
+            printf("\n");
+            printf(">");
+//            for (int i = 0; i <= maxi; ++i) {
+            for (int i = 16; i <= maxi; ++i) {
+                if (reg_set[i]) printf("%02x", reg_val[i]);
+                else printf("  ");
+            }
+            printf("\n");
+            reg_set = {};
+        }
+    }
 }
 
 void VGM::render(float* buffer, uint32_t sample_count) {
@@ -375,25 +489,32 @@ void VGM::render(float* buffer, uint32_t sample_count) {
             buffer[1] += ym2151_out.data[1] * m_volume;
 
             // ym2203
-            ym2203_sample_pos += ym2203_rate / float(MIXRATE);
-            while (ym2203_sample_pos >= 1) {
-                ym2203.generate(&ym2203_out);
-                ym2203_sample_pos -= 1;
+            if (!USE_MY2203) {
+                ym2203_sample_pos += ym2203_rate / float(MIXRATE);
+                while (ym2203_sample_pos >= 1) {
+                    ym2203.generate(&ym2203_out);
+                    ym2203_sample_pos -= 1;
+                }
+                buffer[0] += ym2203_out.data[0] * m_volume;
+                buffer[1] += ym2203_out.data[0] * m_volume;
+                // ssg voice panning
+                constexpr float PAN[] = {
+                    0.5 * std::sqrt(0.5),
+                    0.5 * std::sqrt(0.5 + 0.2),
+                    0.5 * std::sqrt(0.5 - 0.2),
+                };
+                buffer[0] += ym2203_out.data[1] * m_volume * PAN[0];
+                buffer[1] += ym2203_out.data[1] * m_volume * PAN[0];
+                buffer[0] += ym2203_out.data[2] * m_volume * PAN[1];
+                buffer[1] += ym2203_out.data[2] * m_volume * PAN[2];
+                buffer[0] += ym2203_out.data[3] * m_volume * PAN[2];
+                buffer[1] += ym2203_out.data[3] * m_volume * PAN[1];
             }
-            buffer[0] += ym2203_out.data[0] * m_volume;
-            buffer[1] += ym2203_out.data[0] * m_volume;
-            // ssg voice panning
-            constexpr float PAN[] = {
-                0.5 * std::sqrt(0.5),
-                0.5 * std::sqrt(0.5 + 0.2),
-                0.5 * std::sqrt(0.5 - 0.2),
-            };
-            buffer[0] += ym2203_out.data[1] * m_volume * PAN[0];
-            buffer[1] += ym2203_out.data[1] * m_volume * PAN[0];
-            buffer[0] += ym2203_out.data[2] * m_volume * PAN[1];
-            buffer[1] += ym2203_out.data[2] * m_volume * PAN[2];
-            buffer[0] += ym2203_out.data[3] * m_volume * PAN[2];
-            buffer[1] += ym2203_out.data[3] * m_volume * PAN[1];
+            else {
+                float x = my2203.render();
+                buffer[0] += x;
+                buffer[1] += x;
+            }
 
             // rf5c68
             rf5c68_sample_pos += rf5c68_step;
@@ -441,13 +562,14 @@ int main(int argc, char** argv) {
     char const* filename = argv[1];
 
     if (!vgm.init(filename)) return 1;
-
-    SDL_AudioSpec spec = {
-        MIXRATE, AUDIO_F32, 2, 0, 1024 * 2, 0, 0, &audio_callback, nullptr,
-    };
+    SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     SDL_Init(SDL_INIT_AUDIO);
+    SDL_AudioSpec spec = {
+        MIXRATE, AUDIO_F32, 2, 0, 1024, 0, 0, &audio_callback, nullptr,
+    };
     SDL_OpenAudio(&spec, nullptr);
     SDL_PauseAudio(0);
+
     while (!vgm.done()) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
