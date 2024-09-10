@@ -1,7 +1,7 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
+#include <array>
 
 
 class RF5C68 {
@@ -40,7 +40,7 @@ public:
             else             m_wbank = data & 15;
             break;
         case 0x08:
-            for (size_t i = 0; i < m_channels.size(); i++) {
+            for (std::size_t i = 0; i < m_channels.size(); i++) {
                 m_channels[i].enabled = (~data >> i) & 1;
                 if (!m_channels[i].enabled) m_channels[i].addr = m_channels[i].start << (8 + 11);
             }

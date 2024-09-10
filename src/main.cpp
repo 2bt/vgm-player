@@ -1,16 +1,18 @@
-#include "ymfm_opn.h"
-#include "ymfm_opm.h"
-#include "rf5c68.hpp"
 #include "ga20.hpp"
+#include "rf5c68.hpp"
+
+#include "ymfm_opm.h"
+#include "ymfm_opn.h"
 #include "ym2612.hpp"
 
 #include <SDL.h>
-#include <zlib.h>
-#include <sndfile.h>
 #include <array>
-#include <cstdio>
 #include <cmath>
+#include <cstdio>
+#include <sndfile.h>
 #include <vector>
+#include <fstream>
+#include <zlib.h>
 
 
 enum {
@@ -20,24 +22,21 @@ enum {
 
 class Simple2203 {
 public:
-    void set_clock(uint32_t clock) {
-        m_cps = clock * (1.0f / MIXRATE);
-    }
+    void set_clock(uint32_t clock) { m_cps = clock * (1.0f / MIXRATE); }
 
     void write_reg(uint8_t a, uint8_t v) {
+        constexpr float N = 140.0f;
         m_reg[a] = v;
         switch (a) {
-        case 0x8: case 0x9: case 0xa: {
-            constexpr float N = 140.0f;
-            m_ssg_chans[a - 8].volume = (std::pow(N, (v & 0xf) * (1.0f / 15.0f)) - 1.0f)
-                                      * (0.5f / (N - 1.0f));
+        case 0x8:
+        case 0x9:
+        case 0xa:
+            m_ssg_chans[a - 8].volume = (std::pow(N, (v & 0xf) * (1.0f / 15.0f)) - 1.0f) * (0.5f / (N - 1.0f));
             break;
-        }
-        case 0x28: {
+        case 0x28:
             if ((v & 3) == 3) break;
             key_onoff(v & 3, v >> 4);
             break;
-        }
         default: break;
         }
     }
@@ -71,7 +70,7 @@ public:
             }
             // tone
             uint8_t ctrl = m_reg[7] >> c;
-            float amp = 0.0f;
+            float   amp  = 0.0f;
             if (!(ctrl & 1)) {
                 amp = chan.count * 2 < period ? -1.0f : 1.0f;
             }
@@ -97,28 +96,27 @@ public:
 
             FmChan& chan = m_fm_chans[c];
             for (int o = 0; o < 4; ++o) {
-                Op& op = chan.ops[o];
+                Op&     op = chan.ops[o];
                 uint8_t oo = c + OP_OFFSET[o];
 
                 // multiple
                 uint8_t multiple = m_reg[0x30 + oo] & 0xf;
-                multiple = multiple * 2 | (multiple == 0);
+                multiple         = multiple * 2 | (multiple == 0);
                 // TODO: detune
                 op.phase += pitch * multiple;
                 op.phase -= int(op.phase);
 
                 uint8_t scaling = m_reg[0x50] >> 6;
-                scaling = keycode >> (scaling ^ 3);
-
-                uint8_t adsr[4] = {
+                scaling         = keycode >> (scaling ^ 3);
+                int adsr[4] = {
                     m_reg[0x50 + oo] & 0x1f,
                     m_reg[0x60 + oo] & 0x1f,
                     m_reg[0x70 + oo] & 0x1f,
                     ((m_reg[0x80 + oo] & 0x0f) << 1) | 1,
                 };
-                uint8_t rate = adsr[op.state] * 2;
-                if (rate) rate += scaling;
-                rate = std::min<uint8_t>(rate, op.state == Op::ATTACK ? 63 : 60);
+                int rate = adsr[op.state] * 2;
+                if (rate > 0) rate += scaling;
+                rate       = std::min<int>(rate, op.state == Op::ATTACK ? 63 : 60);
                 uint32_t f = rate <= 1 ? 0 : ((4 | (rate & 3)) << (rate >> 2)) >> 2;
 
                 uint8_t sustain = m_reg[0x80 + oo] >> 4;
@@ -163,7 +161,6 @@ public:
             out[1] += a[3] * PAN_FM[2 - c];
         }
     }
-
 private:
     static constexpr uint8_t OP_OFFSET[4] = { 0, 8, 4, 12 };
 
@@ -173,7 +170,7 @@ private:
         float s = std::sin((op.phase + shift) * 2.0f * M_PI);
 
         uint8_t total_level = m_reg[0x40 + c + OP_OFFSET[o]] & 0x7f;
-        float vol = std::exp2f(total_level * -0.125f);
+        float   vol         = std::exp2f(total_level * -0.125f);
 
         return s * op.level * vol;
     }
@@ -198,7 +195,6 @@ private:
     struct Op {
         enum State { ATTACK, DECAY, SUSTAIN, RELEASE };
         float phase;
-        bool  gate;
         float level;
         State state = RELEASE;
     };
@@ -207,12 +203,12 @@ private:
         float feedback;
         Op    ops[4];
     };
-    float    m_cps; // cycles per sample
-    uint8_t  m_reg[256];
-    float    m_noise_count;
-    uint32_t m_noise_state = 1;
-    SsgChan  m_ssg_chans[3];
-    FmChan   m_fm_chans[3];
+    float    m_cps          = 0.0f; // cycles per sample
+    uint8_t  m_reg[256]     = {};
+    float    m_noise_count  = 0;
+    uint32_t m_noise_state  = 1;
+    SsgChan  m_ssg_chans[3] = {};
+    FmChan   m_fm_chans[3]  = {};
 };
 
 Simple2203 simple2203;
@@ -280,7 +276,7 @@ struct VGMHeader {
 
 class VGM {
 public:
-    bool init(char const* filename);
+    bool init(char const* filename, int loop_count);
     void use_simple2203() { m_use_simple2203 = true; }
     bool done() const { return m_done; }
     void render(float* buffer, uint32_t sample_count);
@@ -300,7 +296,7 @@ private:
     uint32_t             m_loop_pos;
     uint32_t             m_samples_left;
     float                m_volume;
-    size_t               m_loop_counter;
+    int                  m_loop_counter;
 };
 
 // chips
@@ -337,20 +333,16 @@ float  ga20_step;
 int    ga20_out[2];
 
 
-bool VGM::init(char const* filename) {
-    FILE* f = fopen(filename, "rb");
-    if (!f) {
-        printf("error: can't open file\n");
+bool VGM::init(char const* filename, int loop_count) {
+    std::ifstream file(filename, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) {
+        printf("error: couldn't open file\n");
         return false;
     }
-    fseek(f, 0, SEEK_END);
-    m_data.resize(ftell(f));
-    rewind(f);
-    fread(m_data.data(), 1, m_data.size(), f);
-    fclose(f);
-
-    if (m_data.size() < 4) {
-        printf("error: file too small\n");
+    m_data.resize(file.tellg());
+    file.seekg(0, std::ios::beg);
+    if (!file.read(reinterpret_cast<char*>(m_data.data()), m_data.size())) {
+        printf("error: couldn't read file\n");
         return false;
     }
 
@@ -403,7 +395,7 @@ bool VGM::init(char const* filename) {
         return false;
     }
 
-    m_loop_counter = 0;
+    m_loop_counter = loop_count;
     m_done         = false;
     m_pos          = 0x34 + header.data_offset;
     m_samples_left = 0;
@@ -518,6 +510,7 @@ void VGM::command() {
             rom |= next() << 8;
             rom |= next() << 16;
             rom |= next() << 24;
+            (void)rom;
 
             uint32_t addr = next();
             addr |= next() << 8;
@@ -550,13 +543,13 @@ void VGM::command() {
 
     case 0x66: // end of sound data
         if (m_loop_pos) {
-            printf("loop\n");
             m_pos = m_loop_pos;
-            ++m_loop_counter;
-            if (m_loop_counter >= 6) m_done = true;
-            break;
+            if (--m_loop_counter > 0) {
+                printf("looping\n");
+                break;
+            }
         }
-        printf("EOF\n");
+        printf("done\n");
         m_done = true;
         break;
 
@@ -704,29 +697,36 @@ int main(int argc, char** argv) {
     bool wave = false;
     bool usage = false;
     bool use_simple2203 = false;
-    int opt;
-    while ((opt = getopt(argc, argv, "ws")) != -1) {
+    int  loop_count = 0;
+    int  opt;
+    while ((opt = getopt(argc, argv, "wsl:")) != -1) {
         switch (opt) {
         case 'w': wave = true; break;
         case 's': use_simple2203 = true; break;
+        case 'l': loop_count = atoi(optarg); break;
         default: usage = true; break;
         }
     }
     if (optind >= argc || usage) {
-        printf("Usage: %s [-w] [-s] vgm-file\n", argv[0]);
+        printf("Usage: %s [-w] [-s] [-l loop_count] vgm-file...\n", argv[0]);
         return 1;
     }
 
-    if (!vgm.init(argv[optind])) return 1;
     if (use_simple2203) vgm.use_simple2203();
 
     if (wave) {
-        SF_INFO info = { 0, MIXRATE, 1, SF_FORMAT_WAV | SF_FORMAT_FLOAT };
+        SF_INFO info = {
+            0, MIXRATE, 1, SF_FORMAT_WAV | SF_FORMAT_FLOAT, 0, 0,
+        };
         SNDFILE* f = sf_open("out.wav", SFM_WRITE, &info);
-        while (!vgm.done()) {
-            float buffer[2];
-            vgm.render(buffer, 1);
-            sf_writef_float(f, buffer, 1);
+        for (; optind < argc; optind++) {
+            printf(">>> %s\n", argv[optind]);
+            if (!vgm.init(argv[optind], loop_count)) return 1;
+            while (!vgm.done()) {
+                float buffer[2];
+                vgm.render(buffer, 1);
+                sf_writef_float(f, buffer, 1);
+            }
         }
         sf_close(f);
         return 0;
@@ -739,16 +739,23 @@ int main(int argc, char** argv) {
         MIXRATE, AUDIO_F32, 2, 0, 1024, 0, 0, &audio_callback, nullptr,
     };
     SDL_OpenAudio(&spec, nullptr);
-    SDL_PauseAudio(0);
 
-    while (!vgm.done()) {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_QUIT) break;
+    for (; optind < argc; optind++) {
+        printf(">>> %s\n", argv[optind]);
+        if (!vgm.init(argv[optind], loop_count)) return 1;
+
+        SDL_PauseAudio(0);
+        while (!vgm.done()) {
+            SDL_Event event;
+            while (SDL_PollEvent(&event)) {
+                if (event.type == SDL_QUIT) goto exit;
+            }
+            SDL_Delay(100);
         }
-        if (event.type == SDL_QUIT) break;
-        SDL_Delay(100);
+        SDL_PauseAudio(1);
     }
+exit:
+
     SDL_CloseAudio();
     SDL_Quit();
     return 0;
