@@ -142,7 +142,7 @@ public:
             uint8_t feedback = (m_reg[0xb0 + c] >> 3) & 0x7;
             // algorithm
             float a[4] = {};
-            float o = m_feedback = op_amp(c, 0, m_feedback * feedback / 32.0f);
+            float o = chan.feedback = op_amp(c, 0, chan.feedback * feedback * (1.5f / 32.0f));
             if (connect & 0b01111001) a[0] = o;
             if (connect & 0b00100010) a[1] = o;
             if (connect & 0b00100100) a[2] = o;
@@ -200,13 +200,13 @@ private:
     struct Channel {
         float    pitch;
         Operator ops[4];
+        float    feedback;
     };
 
     uint8_t  m_reg[256];
 
     // fm
     Channel  m_channels[3];
-    float    m_feedback;
 
     // ssg
     float    m_cps; // cycles per sample
@@ -554,7 +554,7 @@ void VGM::command() {
             printf("loop\n");
             m_pos = m_loop_pos;
             ++m_loop_counter;
-            if (m_loop_counter >= 1) m_done = true;
+            if (m_loop_counter >= 6) m_done = true;
             break;
         }
         printf("EOF\n");
