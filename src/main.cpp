@@ -85,19 +85,26 @@ public:
 
         // fm
         for (int c = 0; c < 3; ++c) {
-
-            uint32_t step  = m_reg[0xa0 + c] | ((m_reg[0xa4 + c] & 0x7) << 8);
-            uint8_t  block = (m_reg[0xa4 + c] >> 3) & 0x7;
-
-            float pitch = (step << block) * m_cps / (0x6000000 * 3);
-
-            uint8_t keycode = (m_reg[0xa4 + c] >> 1) & 0b11110;
-            keycode |= (0xfe80 >> (step >> 7)) & 1;
-
             FmChan& chan = m_fm_chans[c];
+            uint32_t block_freq = m_reg[0xa0 + c] | ((m_reg[0xa4 + c] & 0x3f) << 8);
+
             for (int o = 0; o < 4; ++o) {
                 Op&     op = chan.ops[o];
                 uint8_t oo = c + OP_OFFSET[o];
+
+                // multi-freq
+                if (c == 2 && (m_reg[0x27] & 0xc0) && o < 3) {
+                    int q = (o + 1) % 3;
+                    block_freq = m_reg[0xa8 + q] | ((m_reg[0xac + q] & 0x3f) << 8);
+                }
+
+                // calculate pitch and keycode
+                uint32_t step  = block_freq & 0x7ff;
+                uint8_t  block = block_freq >> 11;
+                float    pitch = (step << block) * m_cps / (0x6000000 * 3);
+                uint8_t  keycode = (m_reg[0xa4 + c] >> 1) & 0b11110;
+                keycode |= (0xfe80 >> (step >> 7)) & 1;
+
 
                 // multiple
                 uint8_t multiple = m_reg[0x30 + oo] & 0xf;
@@ -143,7 +150,7 @@ public:
             uint8_t feedback = (m_reg[0xb0 + c] >> 3) & 0x7;
             // algorithm
             float a[4] = {};
-            float o = chan.feedback = op_amp(c, 0, chan.feedback * feedback * (1.5f / 32.0f));
+            float o = chan.feedback = op_amp(c, 0, chan.feedback * feedback * (3.0f / 32.0f));
             if (connect & 0b01111001) a[0] = o;
             if (connect & 0b00100010) a[1] = o;
             if (connect & 0b00100100) a[2] = o;
@@ -168,24 +175,26 @@ private:
         Op const& op = m_fm_chans[c].ops[o];
         shift *= 4.0f; // sounds ok but is this correct?
         float s = std::sin((op.phase + shift) * 2.0f * M_PI);
-
         uint8_t total_level = m_reg[0x40 + c + OP_OFFSET[o]] & 0x7f;
         float   vol         = std::exp2f(total_level * -0.125f);
-
         return s * op.level * vol;
     }
 
     void key_onoff(uint8_t c, uint8_t op_mask) {
         FmChan& chan = m_fm_chans[c];
         for (int o = 0; o < 4; ++o) {
-            if ((op_mask >> o) & 1) {
+            uint8_t m = 1 << o;
+            if ((op_mask & m) == (chan.op_mask & m)) continue;
+            if (op_mask & m) {
                 chan.ops[o].state = Op::ATTACK;
                 chan.ops[o].level = 0;
+                chan.ops[o].phase = 0;
             }
             else {
                 chan.ops[o].state = Op::RELEASE;
             }
         }
+        chan.op_mask = op_mask;
     }
 
     struct SsgChan {
@@ -199,6 +208,7 @@ private:
         State state = RELEASE;
     };
     struct FmChan {
+        uint8_t op_mask;
         float pitch;
         float feedback;
         Op    ops[4];
@@ -477,20 +487,11 @@ void VGM::command() {
     {
         uint8_t a = next();
         uint8_t v = next();
-
-        // ignore sgg & useless writes
-        //if (a < 0x30 && a != 0x28) break;
-
-        // only allow note on/off on channel 0
-//        if (a == 0x28 && (v & 3) != 0) break;
-
         reg_val[a] = v;
         ++reg_set[a];
-
         ym2203.write_address(a);
         ym2203.write_data(v);
         simple2203.write_reg(a, v);
-
         break;
     }
     case 0x67: // data block
@@ -558,38 +559,6 @@ void VGM::command() {
         m_done = true;
         break;
     }
-
-//    if (m_samples_left < 100) m_samples_left = 0;
-//    if (m_samples_left > 100) {
-//        int maxi = -1;
-//        for (int i = 0; i < reg_set.size(); ++i) {
-//            if (reg_set[i]) maxi = i;
-//        }
-//        if (maxi >= 0) {
-//            // print address
-//            printf(">");
-//            for (int i = 0; i <= maxi; ++i) {
-//                if (i % 4 == 0) printf("%02x", i);
-//                else printf("..");
-//            }
-//            printf("\n");
-//            // print reg set
-//            printf(">");
-//            for (int i = 0; i <= maxi; ++i) {
-//                printf("%2d", reg_set[i]);
-//            }
-//            printf("\n");
-//            // print reg value
-//            printf(">");
-//            for (int i = 0; i <= maxi; ++i) {
-//                if (reg_set[i]) printf("%02x", reg_val[i]);
-//                else printf("..");
-//            }
-//            printf("\n");
-//            reg_set = {};
-//        }
-//    }
-
 }
 
 void VGM::render(float* buffer, uint32_t sample_count) {

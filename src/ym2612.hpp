@@ -62,6 +62,7 @@ struct opdata_cache
 //           21 xxxxxxxx Test register
 //           22 ----x--- LFO enable [OPNA+ only]
 //              -----xxx LFO rate [OPNA+ only]
+//           27 xx------ CSM/Multi-frequency mode for channel #2
 //           28 x------- Key on/off operator 4
 //              -x------ Key on/off operator 3
 //              --x----- Key on/off operator 2
