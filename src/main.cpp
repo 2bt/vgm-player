@@ -39,13 +39,18 @@ public:
             break;
         default: break;
         }
+        if (a >= 0x90 && a < 0xa0) {
+            if (v & 8) {
+                printf("warning: SSG EG not not supported (%02x:%02x)\n", a, v);
+            }
+        }
     }
 
     void render(float* out) {
         constexpr float PAN_SSG[] = {
-            0.5f * std::sqrt(0.3f),
-            0.5f * std::sqrt(0.5f),
-            0.5f * std::sqrt(0.7f),
+            0.4f * std::sqrt(0.3f),
+            0.4f * std::sqrt(0.5f),
+            0.4f * std::sqrt(0.7f),
         };
         constexpr float PAN_FM[] = {
             0.5f * std::sqrt(0.6f),
@@ -86,26 +91,17 @@ public:
         // fm
         for (int c = 0; c < 3; ++c) {
             FmChan& chan = m_fm_chans[c];
-            uint32_t block_freq = m_reg[0xa0 + c] | ((m_reg[0xa4 + c] & 0x3f) << 8);
-
             for (int o = 0; o < 4; ++o) {
                 Op&     op = chan.ops[o];
                 uint8_t oo = c + OP_OFFSET[o];
-
-                // multi-freq
+                // calculate pitch & keycode
+                uint8_t freq_addr = 0xa0 + c;
                 if (c == 2 && (m_reg[0x27] & 0xc0) && o < 3) {
-                    int q = (o + 1) % 3;
-                    block_freq = m_reg[0xa8 + q] | ((m_reg[0xac + q] & 0x3f) << 8);
+                    freq_addr = 0xa8 + (o + 1) % 3;
                 }
-
-                // calculate pitch and keycode
-                uint32_t step  = block_freq & 0x7ff;
-                uint8_t  block = block_freq >> 11;
-                float    pitch = (step << block) * m_cps / (0x6000000 * 3);
-                uint8_t  keycode = (m_reg[0xa4 + c] >> 1) & 0b11110;
-                keycode |= (0xfe80 >> (step >> 7)) & 1;
-
-
+                uint32_t freq    = m_reg[freq_addr] | ((m_reg[freq_addr + 4] & 0x3f) << 8);
+                float    pitch   = ((freq & 0x7ff) << (freq >> 11)) * m_cps * (1.0f / 0x12000000);
+                uint8_t  keycode = ((freq >> 9) & 0x1e) | ((0xfe80 >> ((freq >> 7) & 3)) & 1);
                 // multiple
                 uint8_t multiple = m_reg[0x30 + oo] & 0xf;
                 multiple         = multiple * 2 | (multiple == 0);
@@ -113,23 +109,17 @@ public:
                 op.phase += pitch * multiple;
                 op.phase -= int(op.phase);
 
-                uint8_t scaling = m_reg[0x50] >> 6;
-                scaling         = keycode >> (scaling ^ 3);
+                // envelope
                 int adsr[4] = {
                     m_reg[0x50 + oo] & 0x1f,
                     m_reg[0x60 + oo] & 0x1f,
                     m_reg[0x70 + oo] & 0x1f,
-                    ((m_reg[0x80 + oo] & 0x0f) << 1) | 1,
+                    (m_reg[0x80 + oo] & 0x0f) * 2 + 1,
                 };
                 int rate = adsr[op.state] * 2;
-                if (rate > 0) rate += scaling;
-                rate       = std::min<int>(rate, op.state == Op::ATTACK ? 63 : 60);
-                uint32_t f = rate <= 1 ? 0 : ((4 | (rate & 3)) << (rate >> 2)) >> 2;
-
-                uint8_t sustain = m_reg[0x80 + oo] >> 4;
-                if (sustain == 15) sustain = 31;
-                float sus_level = std::pow(0.707f, sustain);
-
+                uint8_t scaling = keycode >> ((m_reg[0x50] >> 6) ^ 3);
+                if (rate > 0) std::min<int>(rate + scaling, 63);
+                uint32_t f = rate <= 1 ? 0 : ((4 | (rate & 3)) << (rate >> 2)) >> 2; // magic
                 if (op.state == Op::ATTACK) {
                     if (f > 0) op.level += f * (1.0f / 16.06f / MIXRATE);
                     if (op.level >= 1.0f) {
@@ -139,18 +129,21 @@ public:
                 }
                 else {
                     if (f > 0) op.level *= std::pow(0.9524f, f * (1.0f / MIXRATE));
-                    if (op.state == Op::DECAY && op.level <= sus_level) {
-                        op.level = sus_level;
-                        op.state = Op::SUSTAIN;
+                    if (op.state == Op::DECAY) {
+                        uint8_t sustain = m_reg[0x80 + oo] >> 4;
+                        if (sustain == 15) sustain = 31;
+                        float sus_level = std::pow(0.707f, sustain);
+                        if (op.level <= sus_level) op.state = Op::SUSTAIN;
                     }
                 }
             }
-
+            // algorithm
             uint8_t connect  = 1 << (m_reg[0xb0 + c] & 0x7);
             uint8_t feedback = (m_reg[0xb0 + c] >> 3) & 0x7;
-            // algorithm
+            float fb = 0.0f;
+            if (feedback) fb = chan.feedback * (1 << feedback) * (1.0f / 256.0f);
+            float o = chan.feedback = op_amp(c, 0, fb);
             float a[4] = {};
-            float o = chan.feedback = op_amp(c, 0, chan.feedback * feedback * (3.0f / 32.0f));
             if (connect & 0b01111001) a[0] = o;
             if (connect & 0b00100010) a[1] = o;
             if (connect & 0b00100100) a[2] = o;
@@ -163,7 +156,6 @@ public:
             if (connect & 0b00011111) a[2] += o;
             if (connect & 0b11100000) a[3] += o;
             a[3] += op_amp(c, 3, a[2]);
-
             out[0] += a[3] * PAN_FM[c];
             out[1] += a[3] * PAN_FM[2 - c];
         }
@@ -173,11 +165,9 @@ private:
 
     float op_amp(uint8_t c, uint8_t o, float shift) const {
         Op const& op = m_fm_chans[c].ops[o];
-        shift *= 4.0f; // sounds ok but is this correct?
-        float s = std::sin((op.phase + shift) * 2.0f * M_PI);
-        uint8_t total_level = m_reg[0x40 + c + OP_OFFSET[o]] & 0x7f;
-        float   vol         = std::exp2f(total_level * -0.125f);
-        return s * op.level * vol;
+        uint8_t total = m_reg[0x40 + c + OP_OFFSET[o]] & 0x7f;
+        float   vol   = std::exp2f(total * -0.125f);
+        return std::sin((op.phase + shift * 4.0f) * 2.0f * M_PI) * op.level * vol;
     }
 
     void key_onoff(uint8_t c, uint8_t op_mask) {
@@ -187,8 +177,8 @@ private:
             if ((op_mask & m) == (chan.op_mask & m)) continue;
             if (op_mask & m) {
                 chan.ops[o].state = Op::ATTACK;
-                chan.ops[o].level = 0;
-                chan.ops[o].phase = 0;
+                chan.ops[o].level = 0.0f;
+                chan.ops[o].phase = 0.0f;
             }
             else {
                 chan.ops[o].state = Op::RELEASE;
@@ -209,9 +199,9 @@ private:
     };
     struct FmChan {
         uint8_t op_mask;
-        float pitch;
-        float feedback;
-        Op    ops[4];
+        float   pitch;
+        float   feedback;
+        Op      ops[4];
     };
     float    m_cps          = 0.0f; // cycles per sample
     uint8_t  m_reg[256]     = {};
@@ -226,58 +216,42 @@ Simple2203 simple2203;
 
 #pragma pack(push, 1)
 struct VGMHeader {
-    // 00
     uint32_t magic;
     uint32_t eof_offset;
     uint32_t version;
     uint32_t sn76489_clock;
-    // 10
     uint32_t ym2413_clock;
     uint32_t gd3_offset;
     uint32_t total_samples;
     uint32_t loop_offset;
-    // 20
     uint32_t loop_samples;
     uint32_t rate;
     uint16_t sn76489_feedback;
     uint8_t  sn76489_shift;
     uint8_t  sn76489_flags;
     uint32_t ym2612_clock;
-    // 30
     uint32_t ym2151_clock;
     uint32_t data_offset;
     uint32_t _dummy_30[2];
-    // 40
     uint32_t rf5c68_clock;
     uint32_t ym2203_clock;
     uint32_t ym2608_clock;
     uint32_t YM2610_clock;
-    // 50
     uint32_t _dummy_50[4];
-    // 60
     uint32_t _dummy_60[4];
-    // 70
     uint32_t _dummy_70[3];
     uint8_t  volume_mod;
     uint8_t  _dummy_7d;
     uint8_t  loop_base;
     uint8_t  loop_mod;
-    // 80
     uint32_t _dummy_80[4];
-    // 90
     uint32_t _dummy_90[4];
-    // a0
     uint32_t _dummy_a0[4];
-    // b0
     uint32_t _dummy_b0[4];
-    // c0
     uint32_t _dummy_c0[4];
-    // d0
     uint32_t _dummy_d0[4];
-    // e0
     uint32_t ga20_clock;
-    uint32_t _dummy_d4[3];
-    // f0
+    uint32_t _dummy_e4[3];
     uint32_t _dummy_f0[4];
 };
 #pragma pack(pop)
@@ -452,9 +426,6 @@ bool VGM::init(char const* filename, int loop_count) {
 }
 
 
-std::array<uint8_t, 256> reg_val;
-std::array<uint8_t, 256> reg_set;
-
 void VGM::command() {
     uint8_t  cmd = next();
     uint8_t  b   = 0;
@@ -483,12 +454,11 @@ void VGM::command() {
         ym2151.write_address(next());
         ym2151.write_data(next());
         break;
-    case 0x55: // YM2203, write value dd to register aa
-    {
+    case 0x55: { // YM2203, write value dd to register aa
         uint8_t a = next();
         uint8_t v = next();
-        reg_val[a] = v;
-        ++reg_set[a];
+        // XXX:only fm voice #0
+        //if (a < 16 || (a == 0x28 && (v & 3) != 0)) break;
         ym2203.write_address(a);
         ym2203.write_data(v);
         simple2203.write_reg(a, v);
@@ -619,8 +589,8 @@ void VGM::render(float* buffer, uint32_t sample_count) {
                 };
                 buffer[0] += ym2203_out.data[1] * m_volume * PAN[0];
                 buffer[1] += ym2203_out.data[1] * m_volume * PAN[0];
-                buffer[0] += ym2203_out.data[2] * m_volume * PAN[1];
-                buffer[1] += ym2203_out.data[2] * m_volume * PAN[2];
+                buffer[0] -= ym2203_out.data[2] * m_volume * PAN[1];
+                buffer[1] -= ym2203_out.data[2] * m_volume * PAN[2];
                 buffer[0] += ym2203_out.data[3] * m_volume * PAN[2];
                 buffer[1] += ym2203_out.data[3] * m_volume * PAN[1];
             }
@@ -650,7 +620,6 @@ void VGM::render(float* buffer, uint32_t sample_count) {
         sample_count -= samples;
     }
 }
-
 
 
 
@@ -684,9 +653,7 @@ int main(int argc, char** argv) {
     if (use_simple2203) vgm.use_simple2203();
 
     if (wave) {
-        SF_INFO info = {
-            0, MIXRATE, 1, SF_FORMAT_WAV | SF_FORMAT_FLOAT, 0, 0,
-        };
+        SF_INFO info = { 0, MIXRATE, 2, SF_FORMAT_WAV | SF_FORMAT_FLOAT, 0, 0 };
         SNDFILE* f = sf_open("out.wav", SFM_WRITE, &info);
         for (; optind < argc; optind++) {
             printf(">>> %s\n", argv[optind]);
@@ -704,9 +671,7 @@ int main(int argc, char** argv) {
 
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     SDL_Init(SDL_INIT_AUDIO);
-    SDL_AudioSpec spec = {
-        MIXRATE, AUDIO_F32, 2, 0, 1024, 0, 0, &audio_callback, nullptr,
-    };
+    SDL_AudioSpec spec = { MIXRATE, AUDIO_F32, 2, 0, 1024, 0, 0, &audio_callback, nullptr };
     SDL_OpenAudio(&spec, nullptr);
 
     for (; optind < argc; optind++) {
