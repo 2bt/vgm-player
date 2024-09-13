@@ -33,7 +33,7 @@ public:
         }
     }
 
-    void render(float* out) {
+    void render(float out[2]) {
         constexpr float PAN_SSG[] = {
             0.4f * std::sqrt(0.3f),
             0.4f * std::sqrt(0.5f),

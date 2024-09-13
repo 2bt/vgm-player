@@ -40,7 +40,7 @@ add_executable(vgm-player
     src/main.cpp
     src/rf5c68.hpp
     src/ga20.hpp
-    src/ym2612.hpp
+    src/ym2203.hpp
 )
 target_include_directories(vgm-player PRIVATE
     ymfm/src
