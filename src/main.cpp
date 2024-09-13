@@ -1,22 +1,74 @@
-#include "ga20.hpp"
-#include "rf5c68.hpp"
-#include "ym2203.hpp"
+#include <cstdio>
+#include <vector>
+#include <fstream>
+#include <SDL.h>
+#include <sndfile.h>
+#include <zlib.h>
 
 #include "ymfm_opm.h"
 #include "ymfm_opn.h"
 
-#include <SDL.h>
-#include <array>
-#include <cmath>
-#include <cstdio>
-#include <sndfile.h>
-#include <vector>
-#include <fstream>
-#include <zlib.h>
+#include "ga20.hpp"
+#include "rf5c68.hpp"
+#include "ym2203.hpp"
 
 
 enum { MIXRATE = 44100 };
 
+class VGM {
+public:
+    bool init(char const* filename, int loop_count);
+    void use_simple_ym2203() { m_use_simple_ym2203 = true; }
+    bool done() const { return m_done; }
+    void render(float* buffer, uint32_t sample_count);
+
+private:
+    uint8_t next() {
+        if (m_pos >= m_data.size()) return 0;
+        return m_data[m_pos++];
+    }
+
+    void command();
+
+    bool                 m_done;
+    bool                 m_use_simple_ym2203 = false;
+    std::vector<uint8_t> m_data;
+    uint32_t             m_pos;
+    uint32_t             m_loop_pos;
+    uint32_t             m_samples_left;
+    float                m_volume;
+    int                  m_loop_counter;
+
+    // chips
+    ymfm::ymfm_interface ym2612_interface;
+    ymfm::ym3438         ym2612{ym2612_interface};
+    uint32_t             ym2612_rate;
+    ymfm::ymfm_output<2> ym2612_out;
+    float                ym2612_sample_pos;
+
+    ymfm::ymfm_interface ym2151_interface;
+    ymfm::ym2151         ym2151{ym2151_interface};
+    uint32_t             ym2151_rate;
+    ymfm::ymfm_output<2> ym2151_out;
+    float                ym2151_sample_pos;
+
+    YM2203               simple_ym2203;
+    ymfm::ymfm_interface ym2203_interface;
+    ymfm::ym2203         ym2203{ym2203_interface};
+    uint32_t             ym2203_rate;
+    ymfm::ymfm_output<4> ym2203_out;
+    float                ym2203_sample_pos;
+
+    RF5C68 rf5c68;
+    float  rf5c68_sample_pos = 0;
+    float  rf5c68_step;
+    int    rf5c68_out[2];
+
+    GA20   ga20;
+    float  ga20_sample_pos = 0;
+    float  ga20_step;
+    int    ga20_out[2];
+};
 
 #pragma pack(push, 1)
 struct VGMHeader {
@@ -59,65 +111,6 @@ struct VGMHeader {
     uint32_t _dummy_f0[4];
 };
 #pragma pack(pop)
-
-
-
-class VGM {
-public:
-    bool init(char const* filename, int loop_count);
-    void use_simple_ym2203() { m_use_simple_ym2203 = true; }
-    bool done() const { return m_done; }
-    void render(float* buffer, uint32_t sample_count);
-
-private:
-    uint8_t next() {
-        if (m_pos >= m_data.size()) return 0;
-        return m_data[m_pos++];
-    }
-
-    void command();
-
-    bool                 m_done;
-    bool                 m_use_simple_ym2203 = false;
-    std::vector<uint8_t> m_data;
-    uint32_t             m_pos;
-    uint32_t             m_loop_pos;
-    uint32_t             m_samples_left;
-    float                m_volume;
-    int                  m_loop_counter;
-
-
-    // chips
-    ymfm::ymfm_interface ym2612_interface;
-    ymfm::ym3438         ym2612{ym2612_interface};
-    uint32_t             ym2612_rate;
-    ymfm::ymfm_output<2> ym2612_out;
-    float                ym2612_sample_pos;
-
-    ymfm::ymfm_interface ym2151_interface;
-    ymfm::ym2151         ym2151{ym2151_interface};
-    uint32_t             ym2151_rate;
-    ymfm::ymfm_output<2> ym2151_out;
-    float                ym2151_sample_pos;
-
-    YM2203               simple_ym2203;
-    ymfm::ymfm_interface ym2203_interface;
-    ymfm::ym2203         ym2203{ym2203_interface};
-    uint32_t             ym2203_rate;
-    ymfm::ymfm_output<4> ym2203_out;
-    float                ym2203_sample_pos;
-
-    RF5C68 rf5c68;
-    float  rf5c68_sample_pos = 0;
-    float  rf5c68_step;
-    int    rf5c68_out[2];
-
-    GA20   ga20;
-    float  ga20_sample_pos = 0;
-    float  ga20_step;
-    int    ga20_out[2];
-};
-
 
 bool VGM::init(char const* filename, int loop_count) {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
