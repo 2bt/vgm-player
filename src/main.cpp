@@ -363,10 +363,7 @@ void VGM::render(float* buffer, uint32_t sample_count) {
 
             // ym2203
             if (m_use_simple_ym2203) {
-                float f[2] = {};
-                simple_ym2203.render(f);
-                buffer[0] += f[0];
-                buffer[1] += f[1];
+                simple_ym2203.render(buffer);
             }
             else {
                 ym2203_sample_pos += ym2203_rate / float(MIXRATE);
