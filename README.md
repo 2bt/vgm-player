@@ -12,9 +12,10 @@ Currently, the following chips are supported:
 
 The Yamaha sound chips are emulated via [ymfm](https://github.com/aaronsgiles/ymfm).
 
-For the YM2203, there is also [an alternative implementation](src/ym2203.hpp) which can be enabled via `-s`.
-It is not very accurate, but the code is simple and it sounds not too bad IMO.
-I have each voice a different panning to make it sound more interesting.
+For the YM2203, there is also an alternative implementation which can be enabled via `-s`.
+It is not trying to be super accurate, but it sounds not too bad IMO and the code is very simple.
+I gave each voice a different panning to make it sound more interesting.
+Check out the code [here](src/ym2203.hpp).
 
 There are some really great soundtracks out there for the YM2203, e.g.
 [EVE Burst Error](https://vgmrips.net/packs/pack/eve-burst-error-nec-pc-9801),
