@@ -7,14 +7,22 @@ import signal
 
 
 class Tui:
-    def __init__(self, files):
-        self.files = files
-        self.index = 0
+    def __init__(self, args):
+        self.args = args
         self.play_index = 0
         self.player = None
-
         self.buttons = []
-        for i, f in enumerate(files):
+        if args.file.is_dir():
+            self.files = sorted(args.file.glob("*.vgz"))
+            self.index = 0
+        else:
+            self.files = sorted(args.file.parent.glob("*.vgz"))
+            self.index = self.files.index(args.file)
+        if not self.files:
+            print("error: no vgz files found")
+            exit(1)
+
+        for i, f in enumerate(self.files):
             b = urwid.Button(("off", f.stem), self.button_select, i)
             self.buttons.append(b)
         button_list = urwid.ListBox(self.buttons)
@@ -22,7 +30,6 @@ class Tui:
         self.loop = urwid.MainLoop(top, palette=[
             ("off", "light gray", "black"),
             ("playing", "yellow", "black"),
-
         ], unhandled_input=self.handle_input)
         signal.signal(signal.SIGINT, self.handle_sigint)
 
@@ -57,10 +64,12 @@ class Tui:
         f = self.files[self.index]
         self.buttons[self.index].set_label(("playing", f.stem))
         self.play_index = self.index
-        self.player = subprocess.Popen(["./build/vgm-player", "-s", "-l", "2", f],
-            stdin = subprocess.DEVNULL,
-            stdout = subprocess.PIPE,
-        )
+        args = ["./build/vgm-player", "-l", "2", f]
+        if self.args.s:
+            args.append("-s")
+        self.player = subprocess.Popen(args,
+                stdin = subprocess.DEVNULL,
+                stdout = subprocess.PIPE)
 
     def handle_input(self, key):
         if key == "q":
@@ -87,9 +96,7 @@ class Tui:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("dir", type=pathlib.Path, help="vgm directory")
+    parser.add_argument("file", type=pathlib.Path, help="vgm file or directory")
+    parser.add_argument("-s", action="store_true", help="use simple ym2203")
     args = parser.parse_args()
-
-    files = sorted(args.dir.glob("*.vgz"))
-    if files:
-        Tui(files).run()
+    Tui(args).run()

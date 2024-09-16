@@ -88,24 +88,24 @@ public:
                 }
                 uint32_t freq    = m_reg[freq_addr] | ((m_reg[freq_addr + 4] & 0x3f) << 8);
                 float    pitch   = ((freq & 0x7ff) << (freq >> 11)) * m_cps * (1.0f / 0x12000000);
-                uint8_t  keycode = ((freq >> 9) & 0x1e) | ((0xfe80 >> ((freq >> 7) & 3)) & 1);
+                uint8_t  keycode = ((freq >> 9) & 0x1e) | ((0xfe80 >> ((freq >> 7) & 0xf)) & 1);
                 // multiple
                 uint8_t multiple = m_reg[0x30 + oo] & 0xf;
-                multiple         = multiple * 2 | (multiple == 0);
+                pitch *= multiple * 2 | (multiple == 0);
                 // TODO: detune
-                op.phase += pitch * multiple;
+                op.phase += pitch;
                 op.phase -= int(op.phase);
 
                 // envelope
                 int adsr[4] = {
-                    m_reg[0x50 + oo] & 0x1f,
-                    m_reg[0x60 + oo] & 0x1f,
-                    m_reg[0x70 + oo] & 0x1f,
-                    (m_reg[0x80 + oo] & 0x0f) * 2 + 1,
+                    (m_reg[0x50 + oo] & 0x1f) * 2,
+                    (m_reg[0x60 + oo] & 0x1f) * 2,
+                    (m_reg[0x70 + oo] & 0x1f) * 2,
+                    (m_reg[0x80 + oo] & 0x0f) * 4 + 2,
                 };
-                int rate = adsr[op.state] * 2;
+                int rate = adsr[op.state];
                 uint8_t scaling = keycode >> ((m_reg[0x50] >> 6) ^ 3);
-                if (rate > 0) std::min<int>(rate + scaling, 63);
+                if (rate > 0) rate = std::min<int>(rate + scaling, 63);
                 uint32_t f = rate <= 1 ? 0 : ((4 | (rate & 3)) << (rate >> 2)) >> 2; // magic
                 if (op.state == Op::ATTACK) {
                     if (f > 0) op.level += f * (1.0f / 16.06f / MIXRATE);

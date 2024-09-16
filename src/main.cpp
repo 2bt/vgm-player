@@ -163,7 +163,7 @@ bool VGM::init(char const* filename, int loop_count) {
         printf("error: file too small\n");
         return false;
     }
-    VGMHeader const& header = *(VGMHeader const*)m_data.data();
+    VGMHeader& header = *(VGMHeader*)m_data.data();
     if (header.magic != 0x206d6756) { // "Vgm "
         printf("error: wrong magic\n");
         return false;
@@ -192,11 +192,13 @@ bool VGM::init(char const* filename, int loop_count) {
 
     // init chips
     if (header.ym2612_clock) {
-        printf("ym2612 clock = %u\n", header.ym2612_clock & 0x7fffffff);
+        header.ym2612_clock &= 0x7fffffff;
+        printf("ym2612 clock = %u\n", header.ym2612_clock);
         ym2612.reset();
-        ym2612_rate = ym2612.sample_rate(header.ym2612_clock & 0x7fffffff);
+        ym2612_rate = ym2612.sample_rate(header.ym2612_clock);
     }
     if (header.ym2203_clock) {
+        header.ym2203_clock &= 0x3fffffff;
         printf("ym2203 clock = %u\n", header.ym2203_clock);
         ym2203.reset();
         ym2203.set_fidelity(ymfm::OPN_FIDELITY_MIN);
@@ -226,17 +228,14 @@ void VGM::command() {
     uint8_t  b   = 0;
     uint32_t n   = 0;
     switch (cmd) {
-
     case 0xb0: // RF5C68, write value dd to register aa
         b = next();
         rf5c68.write_reg(b, next());
         break;
-
     case 0xbf: // GA20, write value dd to register aa
         b = next();
         ga20.write_reg(b, next());
         break;
-
     case 0x52: // YM2612 port 0, write value dd to register aa
         ym2612.write_address(next());
         ym2612.write_data(next());
@@ -252,7 +251,7 @@ void VGM::command() {
     case 0x55: { // YM2203, write value dd to register aa
         uint8_t a = next();
         uint8_t v = next();
-        // XXX:only fm voice #0
+        // XXX: only fm voice #0
         //if (a < 16 || (a == 0x28 && (v & 3) != 0)) break;
         ym2203.write_address(a);
         ym2203.write_data(v);
