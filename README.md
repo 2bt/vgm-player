@@ -9,6 +9,7 @@ Currently, the following chips are supported:
 + YM2151
 + YM2203
 + YM2612
++ LR35902 (Game Boy)
 
 The Yamaha sound chips are emulated via [ymfm](https://github.com/aaronsgiles/ymfm).
 
