@@ -11,6 +11,7 @@
 #include "ga20.hpp"
 #include "rf5c68.hpp"
 #include "ym2203.hpp"
+#include "lr35902.hpp"
 
 
 enum { MIXRATE = 44100 };
@@ -59,15 +60,20 @@ private:
     ymfm::ymfm_output<4> ym2203_out;
     float                ym2203_sample_pos;
 
-    RF5C68 rf5c68;
-    float  rf5c68_sample_pos = 0;
-    float  rf5c68_step;
-    int    rf5c68_out[2];
+    RF5C68  rf5c68;
+    float   rf5c68_sample_pos = 0;
+    float   rf5c68_step;
+    int     rf5c68_out[2];
 
-    GA20   ga20;
-    float  ga20_sample_pos = 0;
-    float  ga20_step;
-    int    ga20_out[2];
+    GA20    ga20;
+    float   ga20_sample_pos = 0;
+    float   ga20_step;
+    int     ga20_out[2];
+
+    LR35902 lr35902;
+    float   lr35902_sample_pos = 0;
+    float   lr35902_step;
+    int     lr35902_out[2];
 };
 
 #pragma pack(push, 1)
@@ -100,7 +106,8 @@ struct VGMHeader {
     uint8_t  _dummy_7d;
     uint8_t  loop_base;
     uint8_t  loop_mod;
-    uint32_t _dummy_80[4];
+    uint32_t lr35902_clock;
+    uint32_t _dummy_81[3];
     uint32_t _dummy_90[4];
     uint32_t _dummy_a0[4];
     uint32_t _dummy_b0[4];
@@ -214,6 +221,10 @@ bool VGM::init(char const* filename, int loop_count) {
         printf("rf5c68 clock = %u\n", header.rf5c68_clock);
         rf5c68_step = header.rf5c68_clock / 384.0 / MIXRATE;
     }
+    if (header.version >= 0x161 && header.lr35902_clock) {
+        printf("lr35902 clock clock = %u\n", header.lr35902_clock);
+        lr35902_step = lr35902.sample_rate(header.lr35902_clock) / MIXRATE;
+    }
     if (header.version >= 0x171 && header.ga20_clock) {
         printf("ga20 clock = %u\n", header.ga20_clock);
         ga20_step = ga20.sample_rate(header.ga20_clock) / MIXRATE;
@@ -231,6 +242,10 @@ void VGM::command() {
     case 0xb0: // RF5C68, write value dd to register aa
         b = next();
         rf5c68.write_reg(b, next());
+        break;
+    case 0xb3: // LR35902, write value dd to register aa
+        b = next();
+        lr35902.write_reg(b, next());
         break;
     case 0xbf: // GA20, write value dd to register aa
         b = next();
@@ -395,7 +410,7 @@ void VGM::render(float* buffer, uint32_t sample_count) {
             buffer[0] += rf5c68_out[0] * m_volume;
             buffer[1] += rf5c68_out[1] * m_volume;
 
-            // rf5c68
+            // ga20
             ga20_sample_pos += ga20_step;
             while (ga20_sample_pos >= 1) {
                 ga20.generate(ga20_out);
@@ -403,6 +418,16 @@ void VGM::render(float* buffer, uint32_t sample_count) {
             }
             buffer[0] += ga20_out[0] * m_volume;
             buffer[1] += ga20_out[1] * m_volume;
+
+            // lr35902
+            lr35902_sample_pos += lr35902_step;
+            while (lr35902_sample_pos >= 1) {
+                lr35902.generate(lr35902_out);
+                lr35902_sample_pos -= 1;
+                // printf("%d, %d\n", lr35902_out[0], lr35902.m_freq_timer);
+            }
+            buffer[0] += lr35902_out[0] * m_volume;
+            buffer[1] += lr35902_out[1] * m_volume;
 
             buffer += 2;
         }
