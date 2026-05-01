@@ -16,6 +16,43 @@
 
 enum { MIXRATE = 44100 };
 
+template<class Chip>
+struct IntResampler {
+    Chip  chip;
+    int   out[2] = {};
+    float pos    = 0;
+    float step   = 0;
+    void advance() {
+        for (pos += step; pos >= 1; pos -= 1) chip.generate(out);
+    }
+    void tick(int* buf) {
+        advance();
+        buf[0] += out[0];
+        buf[1] += out[1];
+    }
+};
+
+template<class Chip, int N = 2>
+struct YmfmResampler {
+    ymfm::ymfm_interface iface;
+    ymfm::ymfm_output<N> out;
+    Chip                 chip{iface};
+    float                pos  = 0;
+    float                step = 0;
+    void init(uint32_t clock) {
+        chip.reset();
+        step = chip.sample_rate(clock) / float(MIXRATE);
+    }
+    void advance() {
+        for (pos += step; pos >= 1; pos -= 1) chip.generate(&out);
+    }
+    void tick(int* buf) {
+        advance();
+        buf[0] += out.data[0];
+        buf[1] += out.data[1];
+    }
+};
+
 class VGM {
 public:
     bool init(char const* filename, int loop_count);
@@ -41,39 +78,13 @@ private:
     int                  m_loop_counter;
 
     // chips
-    ymfm::ymfm_interface ym2612_interface;
-    ymfm::ym3438         ym2612{ym2612_interface};
-    uint32_t             ym2612_rate;
-    ymfm::ymfm_output<2> ym2612_out;
-    float                ym2612_sample_pos;
-
-    ymfm::ymfm_interface ym2151_interface;
-    ymfm::ym2151         ym2151{ym2151_interface};
-    uint32_t             ym2151_rate;
-    ymfm::ymfm_output<2> ym2151_out;
-    float                ym2151_sample_pos;
-
-    YM2203               simple_ym2203;
-    ymfm::ymfm_interface ym2203_interface;
-    ymfm::ym2203         ym2203{ym2203_interface};
-    uint32_t             ym2203_rate;
-    ymfm::ymfm_output<4> ym2203_out;
-    float                ym2203_sample_pos;
-
-    RF5C68  rf5c68;
-    float   rf5c68_sample_pos = 0;
-    float   rf5c68_step;
-    int     rf5c68_out[2];
-
-    GA20    ga20;
-    float   ga20_sample_pos = 0;
-    float   ga20_step;
-    int     ga20_out[2];
-
-    LR35902 lr35902;
-    float   lr35902_sample_pos = 0;
-    float   lr35902_step;
-    int     lr35902_out[2];
+    YmfmResampler<ymfm::ym3438>    ym2612;
+    YmfmResampler<ymfm::ym2151>    ym2151;
+    YmfmResampler<ymfm::ym2203, 4> ym2203;
+    YM2203                         ym2203_simple;
+    IntResampler<RF5C68>           rf5c68;
+    IntResampler<GA20>             ga20;
+    IntResampler<LR35902>          lr35902;
 };
 
 #pragma pack(push, 1)
@@ -201,33 +212,30 @@ bool VGM::init(char const* filename, int loop_count) {
     if (header.ym2612_clock) {
         header.ym2612_clock &= 0x7fffffff;
         printf("ym2612 clock = %u\n", header.ym2612_clock);
-        ym2612.reset();
-        ym2612_rate = ym2612.sample_rate(header.ym2612_clock);
+        ym2612.init(header.ym2612_clock);
     }
     if (header.ym2203_clock) {
         header.ym2203_clock &= 0x3fffffff;
         printf("ym2203 clock = %u\n", header.ym2203_clock);
-        ym2203.reset();
-        ym2203.set_fidelity(ymfm::OPN_FIDELITY_MIN);
-        ym2203_rate = ym2203.sample_rate(header.ym2203_clock);
-        simple_ym2203.set_clock(header.ym2203_clock);
+        ym2203.chip.set_fidelity(ymfm::OPN_FIDELITY_MIN);
+        ym2203.init(header.ym2203_clock);
+        ym2203_simple.set_clock(header.ym2203_clock);
     }
     if (header.ym2151_clock) {
         printf("ym2151 clock = %u\n", header.ym2151_clock);
-        ym2151.reset();
-        ym2151_rate = ym2151.sample_rate(header.ym2151_clock);
+        ym2151.init(header.ym2151_clock);
     }
     if (header.rf5c68_clock) {
         printf("rf5c68 clock = %u\n", header.rf5c68_clock);
-        rf5c68_step = header.rf5c68_clock / 384.0 / MIXRATE;
+        rf5c68.step = header.rf5c68_clock / 384.0 / float(MIXRATE);
     }
     if (header.version >= 0x161 && header.lr35902_clock) {
-        printf("lr35902 clock clock = %u\n", header.lr35902_clock);
-        lr35902_step = lr35902.sample_rate(header.lr35902_clock) / MIXRATE;
+        printf("lr35902 clock = %u\n", header.lr35902_clock);
+        lr35902.step = lr35902.chip.sample_rate(header.lr35902_clock) / float(MIXRATE);
     }
     if (header.version >= 0x171 && header.ga20_clock) {
         printf("ga20 clock = %u\n", header.ga20_clock);
-        ga20_step = ga20.sample_rate(header.ga20_clock) / MIXRATE;
+        ga20.step = ga20.chip.sample_rate(header.ga20_clock) / float(MIXRATE);
     }
 
     return true;
@@ -241,36 +249,36 @@ void VGM::command() {
     switch (cmd) {
     case 0xb0: // RF5C68, write value dd to register aa
         b = next();
-        rf5c68.write_reg(b, next());
+        rf5c68.chip.write_reg(b, next());
         break;
     case 0xb3: // LR35902, write value dd to register aa
         b = next();
-        lr35902.write_reg(b, next());
+        lr35902.chip.write_reg(b, next());
         break;
     case 0xbf: // GA20, write value dd to register aa
         b = next();
-        ga20.write_reg(b, next());
+        ga20.chip.write_reg(b, next());
         break;
     case 0x52: // YM2612 port 0, write value dd to register aa
-        ym2612.write_address(next());
-        ym2612.write_data(next());
+        ym2612.chip.write_address(next());
+        ym2612.chip.write_data(next());
         break;
     case 0x53: // YM2612 port 1, write value dd to register aa
-        ym2612.write_address_hi(next());
-        ym2612.write_data_hi(next());
+        ym2612.chip.write_address_hi(next());
+        ym2612.chip.write_data_hi(next());
         break;
     case 0x54: // YM2151, write value dd to register aa
-        ym2151.write_address(next());
-        ym2151.write_data(next());
+        ym2151.chip.write_address(next());
+        ym2151.chip.write_data(next());
         break;
     case 0x55: { // YM2203, write value dd to register aa
         uint8_t a = next();
         uint8_t v = next();
         // XXX: only fm voice #0
         //if (a < 16 || (a == 0x28 && (v & 3) != 0)) break;
-        ym2203.write_address(a);
-        ym2203.write_data(v);
-        simple_ym2203.write_reg(a, v);
+        ym2203.chip.write_address(a);
+        ym2203.chip.write_data(v);
+        ym2203_simple.write_reg(a, v);
         break;
     }
     case 0x67: // data block
@@ -283,7 +291,7 @@ void VGM::command() {
         if (b == 0xc0) { // rf5c68
             uint16_t addr = next();
             addr |= next() << 8;
-            for (; n > 2; --n) rf5c68.write_mem(addr++, next());
+            for (; n > 2; --n) rf5c68.chip.write_mem(addr++, next());
         }
         else if (b == 0x93) { // ga20 rom
             uint32_t rom = next();
@@ -296,7 +304,7 @@ void VGM::command() {
             addr |= next() << 8;
             addr |= next() << 16;
             addr |= next() << 24;
-            for (; n > 8; --n) ga20.write_mem(addr++, next());
+            for (; n > 8; --n) ga20.chip.write_mem(addr++, next());
         }
         else {
             printf("warning: unknown data block %02x %04x\n", b, n);
@@ -354,79 +362,37 @@ void VGM::render(float* buffer, uint32_t sample_count) {
 
         uint32_t samples = std::min(sample_count, m_samples_left);
         for (uint32_t i = 0; i < samples; ++i) {
-            buffer[0] = 0;
-            buffer[1] = 0;
+            int ibuf[2] = {};
 
-            // ym2612
-            ym2612_sample_pos += ym2612_rate / float(MIXRATE);
-            while (ym2612_sample_pos >= 1) {
-                ym2612.generate(&ym2612_out);
-                ym2612_sample_pos -= 1;
-            }
-            buffer[0] += ym2612_out.data[0] * m_volume;
-            buffer[1] += ym2612_out.data[1] * m_volume;
+            ym2612.tick(ibuf);
+            ym2151.tick(ibuf);
+            rf5c68.tick(ibuf);
+            ga20.tick(ibuf);
+            lr35902.tick(ibuf);
 
-            // ym2151
-            ym2151_sample_pos += ym2151_rate / float(MIXRATE);
-            while (ym2151_sample_pos >= 1) {
-                ym2151.generate(&ym2151_out);
-                ym2151_sample_pos -= 1;
-            }
-            buffer[0] += ym2151_out.data[0] * m_volume;
-            buffer[1] += ym2151_out.data[1] * m_volume;
+            buffer[0] = ibuf[0] * m_volume;
+            buffer[1] = ibuf[1] * m_volume;
 
-            // ym2203
             if (m_use_simple_ym2203) {
-                simple_ym2203.render(buffer);
+                ym2203_simple.render(buffer);
             }
             else {
-                ym2203_sample_pos += ym2203_rate / float(MIXRATE);
-                while (ym2203_sample_pos >= 1) {
-                    ym2203.generate(&ym2203_out);
-                    ym2203_sample_pos -= 1;
-                }
-                buffer[0] += ym2203_out.data[0] * m_volume;
-                buffer[1] += ym2203_out.data[0] * m_volume;
-                // ssg voice panning
-                constexpr float PAN[] = {
-                    0.5 * std::sqrt(0.5),
-                    0.5 * std::sqrt(0.5 + 0.2),
-                    0.5 * std::sqrt(0.5 - 0.2),
+                // handle ym2203 separately to apply panning
+                ym2203.advance();
+                static const float PAN[] = {
+                    0.5f * std::sqrt(0.5f),
+                    0.5f * std::sqrt(0.5f + 0.2f),
+                    0.5f * std::sqrt(0.5f - 0.2f),
                 };
-                buffer[0] += ym2203_out.data[1] * m_volume * PAN[0];
-                buffer[1] += ym2203_out.data[1] * m_volume * PAN[0];
-                buffer[0] -= ym2203_out.data[2] * m_volume * PAN[1];
-                buffer[1] -= ym2203_out.data[2] * m_volume * PAN[2];
-                buffer[0] += ym2203_out.data[3] * m_volume * PAN[2];
-                buffer[1] += ym2203_out.data[3] * m_volume * PAN[1];
+                buffer[0] += ym2203.out.data[0] * m_volume;
+                buffer[1] += ym2203.out.data[0] * m_volume;
+                buffer[0] += ym2203.out.data[1] * PAN[0] * m_volume;
+                buffer[1] += ym2203.out.data[1] * PAN[0] * m_volume;
+                buffer[0] -= ym2203.out.data[2] * PAN[1] * m_volume;
+                buffer[1] -= ym2203.out.data[2] * PAN[2] * m_volume;
+                buffer[0] += ym2203.out.data[3] * PAN[2] * m_volume;
+                buffer[1] += ym2203.out.data[3] * PAN[1] * m_volume;
             }
-
-            // rf5c68
-            rf5c68_sample_pos += rf5c68_step;
-            while (rf5c68_sample_pos >= 1) {
-                rf5c68.generate(rf5c68_out);
-                rf5c68_sample_pos -= 1;
-            }
-            buffer[0] += rf5c68_out[0] * m_volume;
-            buffer[1] += rf5c68_out[1] * m_volume;
-
-            // ga20
-            ga20_sample_pos += ga20_step;
-            while (ga20_sample_pos >= 1) {
-                ga20.generate(ga20_out);
-                ga20_sample_pos -= 1;
-            }
-            buffer[0] += ga20_out[0] * m_volume;
-            buffer[1] += ga20_out[1] * m_volume;
-
-            // lr35902
-            lr35902_sample_pos += lr35902_step;
-            while (lr35902_sample_pos >= 1) {
-                lr35902.generate(lr35902_out);
-                lr35902_sample_pos -= 1;
-            }
-            buffer[0] += lr35902_out[0] * m_volume;
-            buffer[1] += lr35902_out[1] * m_volume;
 
             buffer += 2;
         }
