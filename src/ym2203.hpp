@@ -27,9 +27,7 @@ public:
         default: break;
         }
         if (a >= 0x90 && a < 0xa0) {
-            if (v & 8) {
-                printf("warning: SSG EG not not supported (%02x:%02x)\n", a, v);
-            }
+            if (v & 8) printf("warning: SSG EG not not supported (%02x:%02x)\n", a, v);
         }
     }
 
@@ -87,10 +85,11 @@ public:
                 uint32_t freq    = m_reg[freq_addr] | ((m_reg[freq_addr + 4] & 0x3f) << 8);
                 float    pitch   = ((freq & 0x7ff) << (freq >> 11)) * m_cps * (1.0f / 0x12000000);
                 uint8_t  keycode = ((freq >> 9) & 0x1e) | ((0xfe80 >> ((freq >> 7) & 0xf)) & 1);
-                // multiple
-                uint8_t multiple = m_reg[0x30 + oo] & 0xf;
-                pitch *= multiple * 2 | (multiple == 0);
-                // TODO: detune
+                // multiple + detune
+                uint8_t mul = m_reg[0x30 + oo] & 0xf;
+                uint8_t dt1 = (m_reg[0x30 + oo] >> 4) & 0x7;
+                pitch *= (mul * 2 | (mul == 0)) + (dt1 & 3) * (dt1 & 4 ? -1 : 1) * 0.003f;
+                // advance phase
                 op.phase += pitch;
                 op.phase -= int(op.phase);
 
