@@ -55,11 +55,9 @@ public:
         }
         for (int c = 0; c < 3; ++c) {
             SsgChan& chan = m_ssg_chans[c];
-            chan.count += m_cps / 32.0f;
             int period = m_reg[c * 2] | ((m_reg[c * 2 + 1] & 0xf) << 8);
-            if (chan.count >= period) {
-                chan.count -= period;
-            }
+            if (period > 0) chan.count = std::fmod(chan.count + m_cps / 32.0f, period);
+
             // tone
             uint8_t ctrl = m_reg[7] >> c;
             float   amp  = 0.0f;
@@ -104,7 +102,7 @@ public:
                     (m_reg[0x80 + oo] & 0x0f) * 4 + 2,
                 };
                 int rate = adsr[op.state];
-                uint8_t scaling = keycode >> ((m_reg[0x50] >> 6) ^ 3);
+                uint8_t scaling = keycode >> ((m_reg[0x50 + oo] >> 6) ^ 3);
                 if (rate > 0) rate = std::min<int>(rate + scaling, 63);
                 uint32_t f = rate <= 1 ? 0 : ((4 | (rate & 3)) << (rate >> 2)) >> 2; // magic
                 if (op.state == Op::ATTACK) {
@@ -198,4 +196,3 @@ private:
     SsgChan  m_ssg_chans[3] = {};
     FmChan   m_fm_chans[3]  = {};
 };
-
