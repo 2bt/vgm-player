@@ -130,6 +130,40 @@ struct VGMHeader {
 };
 #pragma pack(pop)
 
+
+bool inflate_gzip(std::vector<uint8_t>& data) {
+    if (data.size() < 2 || data[0] != 0x1f || data[1] != 0x8b) return true;
+
+    constexpr size_t CHUNK = 1 << 10;
+    std::vector<uint8_t> compressed;
+    std::swap(data, compressed);
+
+    z_stream zs = {};
+    if (inflateInit2(&zs, 16 + MAX_WBITS) != Z_OK) {
+        printf("error: inflateInit\n");
+        return false;
+    }
+    zs.next_in  = compressed.data();
+    zs.avail_in = compressed.size();
+
+    size_t pos = 0;
+    do {
+        data.resize(pos + CHUNK);
+        zs.next_out  = data.data() + pos;
+        zs.avail_out = CHUNK;
+        pos += CHUNK;
+        int ret = inflate(&zs, Z_NO_FLUSH);
+        if (ret != Z_OK && ret != Z_STREAM_END) {
+            printf("error: inflate %d\n", ret);
+            inflateEnd(&zs);
+            return false;
+        }
+    } while (zs.avail_out == 0);
+    data.resize(pos - zs.avail_out);
+    inflateEnd(&zs);
+    return true;
+}
+
 bool VGM::init(char const* filename, int loop_count) {
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
     if (!file.is_open()) {
@@ -142,39 +176,7 @@ bool VGM::init(char const* filename, int loop_count) {
         printf("error: couldn't read file\n");
         return false;
     }
-
-    // check for gzip header
-    if (m_data[0] == 0x1f && m_data[1] == 0x8b) {
-
-        // inflate
-        constexpr size_t CHUNK = 1 << 10;
-
-        std::vector<uint8_t> compressed;
-        std::swap(m_data, compressed);
-
-        z_stream zs = {};
-        if (inflateInit2(&zs, 16 + MAX_WBITS) != Z_OK) {
-            printf("error: inflateInit\n");
-            return false;
-        }
-        zs.next_in  = compressed.data();
-        zs.avail_in = compressed.size();
-
-        size_t pos = 0;
-        do {
-            m_data.resize(pos + CHUNK);
-            zs.next_out  = m_data.data() + pos;
-            zs.avail_out = CHUNK;
-            pos += CHUNK;
-            int ret = inflate(&zs, Z_NO_FLUSH);
-            if (ret != Z_OK && ret != Z_STREAM_END) {
-                printf("error: inflate %d\n", ret);
-                inflateEnd(&zs);
-                return false;
-            }
-        } while (zs.avail_out == 0);
-        m_data.resize(pos - zs.avail_out);
-    }
+    if (!inflate_gzip(m_data)) return false;
 
     // parse header
     if (m_data.size() < sizeof(VGMHeader)) {
