@@ -424,7 +424,6 @@ void VGM::render(float* buffer, uint32_t sample_count) {
             while (lr35902_sample_pos >= 1) {
                 lr35902.generate(lr35902_out);
                 lr35902_sample_pos -= 1;
-                // printf("%d, %d\n", lr35902_out[0], lr35902.m_freq_timer);
             }
             buffer[0] += lr35902_out[0] * m_volume;
             buffer[1] += lr35902_out[1] * m_volume;

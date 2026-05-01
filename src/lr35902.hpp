@@ -22,17 +22,18 @@ public:
         Channel& chan = m_chans[i];
         switch (a) {
         case 0:
-            // TODO
+            // TODO: sweep
             break;
         case 1: case 6:
-            m_duty[i] = v >> 6;
-            chan.length  = v & 0x3f;
+            m_pulse_duty[i] = v >> 6;
+            // fallthrough
+        case 16:
+            chan.length = v & 0x3f;
+            chan.length_counter = 64 - chan.length;
             break;
         case 11:
             chan.length = v;
-            break;
-        case 16:
-            chan.length = v & 0x3f;
+            chan.length_counter = 256 - v;
             break;
         case 12:
             m_wave_vol = (v >> 5) & 0x3;
@@ -45,26 +46,32 @@ public:
         case 3: case 8: case 13:
             m_freq[i] = (m_freq[i] & 0xff00) | v;
             break;
+        case 4: case 9: case 14:
+            m_freq[i] = (m_freq[i] & 0x00ff) | ((v & 0x7) << 8);
+            chan.length_enable = (v >> 6) & 1;
+            if (v & 0x80) {
+                chan.vol        = chan.vol_init;
+                chan.env_timer  = chan.vol_pace;
+                chan.active     = true;
+                m_freq_timer[i] = m_freq[i];
+                m_phase[i]      = 0;
+                if (chan.length_counter == 0) chan.length_counter = (i == 2) ? 256 : 64;
+            }
+            break;
         case 18:
             m_noise_div   = v & 0x7;
             m_noise_shift = (v >> 4) & 0xf;
             m_noise_width = (v >> 3) & 1;
             break;
-        case 4: case 9: case 14:
-            m_freq[i] = (m_freq[i] & 0x00ff) | ((v & 0x7) << 8);
-            if (v & 0x80) {
-                chan.vol      = chan.vol_init;
-                chan.env_timer = chan.vol_pace;
-                m_freq_timer[i]  = m_freq[i];
-                if (i == 2) m_wave_pos = 0;
-            }
-            break;
         case 19:
+            chan.length_enable = (v >> 6) & 1;
             if (v & 0x80) {
                 chan.vol       = chan.vol_init;
                 chan.env_timer = chan.vol_pace;
+                chan.active    = true;
                 m_noise_timer  = 0;
                 m_noise_lfsr   = 0x7fff;
+                if (chan.length_counter == 0) chan.length_counter = 64;
             }
             break;
         default: break;
@@ -72,19 +79,13 @@ public:
     }
 
     void generate(int* out) {
-        // update pulse phases
-        for (int i = 0; i < 2; ++i) {
-            if (++m_freq_timer[i] >= 0x800) {
+        // update pulse/wave phases
+        for (int i = 0; i < 3; ++i) {
+            m_freq_timer[i] += (i == 2) ? 2 : 1; // wave channel runs at twice the speed
+            if (m_freq_timer[i] >= 0x800) {
                 m_freq_timer[i] = m_freq[i];
-                m_duty_step[i]  = (m_duty_step[i] + 1) & 0x7;
+                ++m_phase[i];
             }
-        }
-
-        // update wave phase (clocks at 2x pulse rate)
-        m_freq_timer[2] += 2;
-        if (m_freq_timer[2] >= 0x800) {
-            m_freq_timer[2] = m_freq[2];
-            m_wave_pos = (m_wave_pos + 1) & 0x1f;
         }
 
         // update noise LFSR
@@ -93,19 +94,22 @@ public:
             m_noise_timer = 0;
             int xb = (m_noise_lfsr ^ (m_noise_lfsr >> 1)) & 1;
             m_noise_lfsr = (m_noise_lfsr >> 1) | (xb << 14);
-            if (m_noise_width) m_noise_lfsr = (m_noise_lfsr & ~(1 << 6)) | (xb << 6);
+            if (m_noise_width) m_noise_lfsr = (m_noise_lfsr & ~0x40) | (xb << 6);
         }
 
-        if ((m_cycle & 0xfff) == 0) {
-            // TODO update length
+        // update length counter
+        if ((m_cycle & 0xfff) == 0x000) {
+            for (Channel& chan : m_chans) {
+                if (chan.length_enable && chan.length_counter > 0)
+                    if (--chan.length_counter == 0) chan.active = false;
+            }
         }
         if ((m_cycle & 0x1fff) == 0x1000) {
             // TODO update sweep
         }
         if ((m_cycle & 0x3fff) == 0x3800) {
             // update volume
-            for (int i = 0; i < 4; ++i) {
-                Channel& chan = m_chans[i];
+            for (Channel& chan : m_chans) {
                 if (chan.vol_pace == 0) continue;
                 if (--chan.env_timer <= 0) {
                     chan.env_timer = chan.vol_pace ?: 8;
@@ -114,74 +118,69 @@ public:
             }
         }
 
-        out[0] = 0;
-        out[1] = 0;
+        out[0] = out[1] = 0;
 
         // pulse
         for (int i = 0; i < 2; ++i) {
-            static constexpr uint8_t PULSE[4] = { 0b00000001, 0b10000001, 0b10000111, 0b01111110 };
+            static constexpr uint8_t PULSE[] = {0b00000001, 0b10000001, 0b10000111, 0b01111110};
             Channel& chan = m_chans[i];
-            int ch = (PULSE[m_duty[i]] >> m_duty_step[i]) & 1;
-            ch = (ch * 2 - 1) * chan.vol;
-            out[0] += ch * chan.pan[0];
-            out[1] += ch * chan.pan[1];
+            if (!chan.active) continue;
+            int x = (PULSE[m_pulse_duty[i]] >> (m_phase[i] & 7)) & 1;
+            x = (x * 8 - 4) * chan.vol;
+            out[0] += x * chan.pan[0];
+            out[1] += x * chan.pan[1];
         }
 
         // wave
-        {
-            static constexpr int SCALE[] = {0, 4, 2, 1};
-            Channel& chan = m_chans[2];
-            int nibble = (m_wave_ram[m_wave_pos >> 1] >> (m_wave_pos & 1 ? 0 : 4)) & 0xf;
-            int ch = (nibble - 8) * SCALE[m_wave_vol];
-            out[0] += ch * chan.pan[0];
-            out[1] += ch * chan.pan[1];
+        Channel& wave = m_chans[2];
+        if (wave.active && m_wave_vol > 0) {
+            int nibble = (m_wave_ram[(m_phase[2] >> 1) & 15] >> (m_phase[2] & 1 ? 0 : 4)) & 0xf;
+            int x = (nibble * 2 - 15) << (3 - m_wave_vol);
+            out[0] += x * wave.pan[0];
+            out[1] += x * wave.pan[1];
         }
 
         // noise
-        {
-            Channel& chan = m_chans[3];
-            int ch = ((~m_noise_lfsr & 1) * 2 - 1) * chan.vol;
-            out[0] += ch * chan.pan[0];
-            out[1] += ch * chan.pan[1];
+        Channel& noise = m_chans[3];
+        if (noise.active) {
+            int x = ((~m_noise_lfsr & 1) * 8 - 4) * noise.vol;
+            out[0] += x * noise.pan[0];
+            out[1] += x * noise.pan[1];
         }
 
-        out[0] *= m_vol[0] * 20;
-        out[1] *= m_vol[1] * 20;
-
+        out[0] *= m_vol[0] * 4;
+        out[1] *= m_vol[1] * 4;
         ++m_cycle;
     }
 private:
 
     struct Channel {
-        int vol_init  = 0;
-        int vol_dir   = 0;
-        int vol_pace  = 0;
-        int vol       = 0;
-        int env_timer = 0;
-        int length    = 0;
-        int pan[2]    = {};
+        int  vol_init       = 0;
+        int  vol_dir        = 0;
+        int  vol_pace       = 0;
+        int  vol            = 0;
+        int  env_timer      = 0;
+        int  length         = 0;
+        int  length_counter = 0;
+        bool length_enable  = false;
+        bool active         = false;
+        int  pan[2]         = {};
     };
 
-    // pulse channels
-    int m_duty[2]       = {};
-    int m_duty_step[2]  = {};
-
     // pulse + wave channels
-    int m_freq[3]       = {};
-    int m_freq_timer[3] = {};
-
-    // wave channel
-    uint8_t m_wave_ram[16] = {};
-    int     m_wave_pos     = 0;
-    int     m_wave_vol     = 0;
-
+    int     m_pulse_duty[2] = {};
+    int     m_freq[3]       = {};
+    int     m_freq_timer[3] = {};
+    int     m_phase[3]      = {};
+    uint8_t m_wave_ram[16]  = {};
+    int     m_wave_vol      = 0;
     // noise channel
-    int m_noise_div   = 0;
-    int m_noise_shift = 0;
-    int m_noise_width = 0;
-    int m_noise_lfsr  = 0;
-    int m_noise_timer = 0;
-    
+    int     m_noise_div   = 0;
+    int     m_noise_shift = 0;
+    int     m_noise_width = 0;
+    int     m_noise_lfsr  = 0;
+    int     m_noise_timer = 0;
+    // global
     int     m_cycle    = 0;
     int     m_vol[2]   = {8, 8};
     Channel m_chans[4] = {};
