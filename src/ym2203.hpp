@@ -1,8 +1,8 @@
 #pragma once
-
 #include <cstdint>
 #include <cstdio>
 #include <cmath>
+#include <algorithm>
 
 
 class YM2203 {
@@ -56,16 +56,10 @@ public:
             int period = m_reg[c * 2] | ((m_reg[c * 2 + 1] & 0xf) << 8);
             if (period > 0) chan.count = std::fmod(chan.count + m_cps / 32.0f, period);
 
-            // tone
             uint8_t ctrl = m_reg[7] >> c;
             float   amp  = 0.0f;
-            if (!(ctrl & 1)) {
-                amp = chan.count * 2 < period ? -1.0f : 1.0f;
-            }
-            // noise
-            if (!(ctrl & 8)) {
-                amp = m_noise_state & 1 ? -1.0f : 1.0f;
-            }
+            if (!(ctrl & 1)) amp = chan.count * 2 < period ? -1.0f : 1.0f; // pulse
+            if (!(ctrl & 8)) amp = m_noise_state & 1 ? -1.0f : 1.0f; // noise
             amp *= chan.volume;
             out[0] += amp * PAN_SSG[c];
             out[1] += amp * PAN_SSG[2 - c];
@@ -75,35 +69,27 @@ public:
         for (int c = 0; c < 3; ++c) {
             FmChan& chan = m_fm_chans[c];
             for (int o = 0; o < 4; ++o) {
-                Op&     op = chan.ops[o];
-                uint8_t oo = c + OP_OFFSET[o];
-                // calculate pitch & keycode
-                uint8_t freq_addr = 0xa0 + c;
-                if (c == 2 && (m_reg[0x27] & 0xc0) && o < 3) {
-                    freq_addr = 0xa8 + (o + 1) % 3;
-                }
-                uint32_t freq    = m_reg[freq_addr] | ((m_reg[freq_addr + 4] & 0x3f) << 8);
-                float    pitch   = ((freq & 0x7ff) << (freq >> 11)) * m_cps * (1.0f / 0x12000000);
-                uint8_t  keycode = ((freq >> 9) & 0x1e) | ((0xfe80 >> ((freq >> 7) & 0xf)) & 1);
-                // multiple + detune
-                uint8_t mul = m_reg[0x30 + oo] & 0xf;
-                uint8_t dt1 = (m_reg[0x30 + oo] >> 4) & 0x7;
-                pitch *= (mul * 2 | (mul == 0)) + (dt1 & 3) * (dt1 & 4 ? -1 : 1) * 0.003f;
-                // advance phase
-                op.phase += pitch;
+                Op& op = chan.ops[o];
+                int oo = c + OP_OFFSET[o];
+
+                // phase
+                int fa = 0xa0 + c;
+                if (c == 2 && (m_reg[0x27] & 0xc0) && o < 3) fa = 0xa8 + (o + 1) % 3; // special case for 3-op mode
+                int   freq  = m_reg[fa] | ((m_reg[fa + 4] & 0x3f) << 8);
+                int   mul   = m_reg[0x30 + oo] & 0xf;
+                int   det   = (m_reg[0x30 + oo] >> 4) & 0x7;
+                float pitch = ((freq & 0x7ff) << (freq >> 11));
+                pitch *= (mul * 2 | (mul == 0)) + (det & 3) * (det & 4 ? -1 : 1) * 0.003f;
+                op.phase += pitch * m_cps * (1.0f / 0x12000000);
                 op.phase -= int(op.phase);
 
                 // envelope
-                int adsr[4] = {
-                    (m_reg[0x50 + oo] & 0x1f) * 2,
-                    (m_reg[0x60 + oo] & 0x1f) * 2,
-                    (m_reg[0x70 + oo] & 0x1f) * 2,
-                    (m_reg[0x80 + oo] & 0x0f) * 4 + 2,
-                };
-                int rate = adsr[op.state];
-                uint8_t scaling = keycode >> ((m_reg[0x50 + oo] >> 6) ^ 3);
+                int v    = m_reg[0x50 + oo + op.state * 0x10];
+                int rate = op.state < Op::RELEASE ? (v & 0x1f) * 2 : (v & 0x0f) * 4 + 2;
+                int keycode = ((freq >> 9) & 0x1e) | ((0xfe80 >> ((freq >> 7) & 0xf)) & 1);
+                int scaling = keycode >> ((m_reg[0x50 + oo] >> 6) ^ 3);
                 if (rate > 0) rate = std::min<int>(rate + scaling, 63);
-                uint32_t f = rate <= 1 ? 0 : ((4 | (rate & 3)) << (rate >> 2)) >> 2; // magic
+                int f = rate <= 1 ? 0 : ((4 | (rate & 3)) << (rate >> 2)) >> 2; // magic
                 if (op.state == Op::ATTACK) {
                     if (f > 0) op.level += f * (1.0f / 16.06f / MIXRATE);
                     if (op.level >= 1.0f) {
@@ -114,19 +100,17 @@ public:
                 else {
                     if (f > 0) op.level *= std::pow(0.9524f, f * (1.0f / MIXRATE));
                     if (op.state == Op::DECAY) {
-                        uint8_t sustain = m_reg[0x80 + oo] >> 4;
-                        if (sustain == 15) sustain = 31;
-                        float sus_level = std::pow(0.707f, sustain);
+                        int   sus       = m_reg[0x80 + oo] >> 4;
+                        float sus_level = std::pow(0.707f, sus < 15 ? sus : 31);
                         if (op.level <= sus_level) op.state = Op::SUSTAIN;
                     }
                 }
             }
             // algorithm
-            uint8_t connect  = 1 << (m_reg[0xb0 + c] & 0x7);
-            uint8_t feedback = (m_reg[0xb0 + c] >> 3) & 0x7;
+            int   connect  = 1 << (m_reg[0xb0 + c] & 0x7);
+            int   feedback = (m_reg[0xb0 + c] >> 3) & 0x7;
             float fb = 0.0f;
-            // XXX: is the feedback strength correct?
-            if (feedback) fb = chan.feedback * (1 << feedback) * (1.0f / 280.0f);
+            if (feedback) fb = chan.feedback * (1 << feedback) * (1.0f / 280.0f); // XXX: is the feedback strength correct?
             float o = chan.feedback = op_amp(c, 0, fb);
             float a[4] = {};
             if (connect & 0b01111001) a[0] = o;
@@ -146,19 +130,19 @@ public:
         }
     }
 private:
-    static constexpr uint8_t OP_OFFSET[4] = { 0, 8, 4, 12 };
+    static constexpr int OP_OFFSET[4] = { 0, 8, 4, 12 };
 
-    float op_amp(uint8_t c, uint8_t o, float shift) const {
-        Op const& op = m_fm_chans[c].ops[o];
-        uint8_t total = m_reg[0x40 + c + OP_OFFSET[o]] & 0x7f;
-        float   vol   = std::exp2f(total * -0.125f);
+    float op_amp(int c, int o, float shift) const {
+        Op const& op    = m_fm_chans[c].ops[o];
+        int       total = m_reg[0x40 + c + OP_OFFSET[o]] & 0x7f;
+        float     vol   = std::exp2f(total * -0.125f);
         return std::sin((op.phase + shift * 4.0f) * 2.0f * M_PI) * op.level * vol;
     }
 
-    void key_onoff(uint8_t c, uint8_t op_mask) {
+    void key_onoff(int c, int op_mask) {
         FmChan& chan = m_fm_chans[c];
         for (int o = 0; o < 4; ++o) {
-            uint8_t m = 1 << o;
+            int m = 1 << o;
             if ((op_mask & m) == (chan.op_mask & m)) continue;
             if (op_mask & m) {
                 chan.ops[o].state = Op::ATTACK;
@@ -184,7 +168,6 @@ private:
     };
     struct FmChan {
         uint8_t op_mask;
-        float   pitch;
         float   feedback;
         Op      ops[4];
     };
