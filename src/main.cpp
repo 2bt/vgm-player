@@ -58,7 +58,7 @@ public:
     bool init(char const* filename, int loop_count);
     void use_simple_ym2203() { m_use_simple_ym2203 = true; }
     bool done() const { return m_done; }
-    void render(float* buffer, uint32_t sample_count);
+    uint32_t render(float* buffer, uint32_t sample_count);
 
 private:
     uint8_t next() {
@@ -350,7 +350,8 @@ void VGM::command() {
     }
 }
 
-void VGM::render(float* buffer, uint32_t sample_count) {
+uint32_t VGM::render(float* buffer, uint32_t sample_count) {
+    uint32_t rendered = 0;
     while (sample_count > 0) {
         while (!m_done && m_samples_left == 0) command();
         if (m_done) {
@@ -359,7 +360,7 @@ void VGM::render(float* buffer, uint32_t sample_count) {
                 *buffer++ = 0;
                 --sample_count;
             }
-            return;
+            return rendered;
         }
 
         uint32_t samples = std::min(sample_count, m_samples_left);
@@ -401,7 +402,9 @@ void VGM::render(float* buffer, uint32_t sample_count) {
 
         m_samples_left -= samples;
         sample_count -= samples;
+        rendered += samples;
     }
+    return rendered;
 }
 
 
@@ -438,10 +441,11 @@ int main(int argc, char** argv) {
         for (; optind < argc; optind++) {
             printf(">>> %s\n", argv[optind]);
             if (!vgm.init(argv[optind], loop_count)) return 1;
+            constexpr uint32_t CHUNK = 4096;
+            float buffer[CHUNK * 2];
             while (!vgm.done()) {
-                float buffer[2];
-                vgm.render(buffer, 1);
-                sf_writef_float(f, buffer, 1);
+                uint32_t n = vgm.render(buffer, CHUNK);
+                sf_writef_float(f, buffer, n);
             }
         }
         sf_close(f);
