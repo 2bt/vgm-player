@@ -77,6 +77,8 @@ public:
     }
 
     void render(float out[2]) {
+        if (m_cps == 0.0f) return;
+
         static constexpr float PAN_SSG[] = {
             0.4f * std::sqrt(0.3f),
             0.4f * std::sqrt(0.5f),
@@ -130,7 +132,8 @@ public:
                         if (op.level >= 1.0f) { op.level = 1.0f; op.state = Op::DECAY; }
                     }
                     else {
-                        op.level *= std::pow(0.9524f, f * (1.0f / MIXRATE)); // 0.9524 fitted empirically
+                        // op.level *= std::exp2f(f * (-0.07f / MIXRATE)); // fitted empirically
+                        op.level *= std::exp2f(f * (-0.07f / MIXRATE)); // fitted empirically
                     }
                 }
                 if (op.state == Op::DECAY && op.level <= op.sus_level) op.state = Op::SUSTAIN;
@@ -174,7 +177,7 @@ private:
         int   ks        = 3;    // key-scale shift, pre-decoded from reg 0x50 high bits
         State state     = RELEASE;
         float sample(float shift) const {
-            return std::sin((phase + shift * 4.0f) * 2.0f * M_PI) * level * vol;
+            return std::sin((phase + shift * 4.0f) * (2.0f * float(M_PI))) * level * vol;
         }
     };
     struct FmChan {
