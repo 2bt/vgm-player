@@ -430,23 +430,22 @@ int main(int argc, char** argv) {
         default: usage = true; break;
         }
     }
-    if (optind >= argc || usage) {
-        printf("Usage: %s [-w] [-s] [-l loop_count] vgm-file...\n", argv[0]);
+    if (argc - optind != 1 || usage) {
+        printf("Usage: %s [-w] [-s] [-l loop_count] vgm-file\n", argv[0]);
         return 1;
     }
+    char const* filename = argv[optind];
+
+    if (!vgm.init(filename, loop_count)) return 1;
 
     if (wave) {
         SF_INFO info = { 0, MIXRATE, 2, SF_FORMAT_WAV | SF_FORMAT_FLOAT, 0, 0 };
         SNDFILE* f = sf_open("out.wav", SFM_WRITE, &info);
-        for (; optind < argc; optind++) {
-            printf(">>> %s\n", argv[optind]);
-            if (!vgm.init(argv[optind], loop_count)) return 1;
-            constexpr uint32_t CHUNK = 4096;
-            float buffer[CHUNK * 2];
-            while (!vgm.done()) {
-                uint32_t n = vgm.render(buffer, CHUNK);
-                sf_writef_float(f, buffer, n);
-            }
+        constexpr uint32_t CHUNK = 4096;
+        float buffer[CHUNK * 2];
+        while (!vgm.done()) {
+            uint32_t n = vgm.render(buffer, CHUNK);
+            sf_writef_float(f, buffer, n);
         }
         sf_close(f);
         return 0;
@@ -456,20 +455,8 @@ int main(int argc, char** argv) {
     SDL_Init(SDL_INIT_AUDIO);
     SDL_AudioSpec spec = { MIXRATE, AUDIO_F32, 2, 0, 1024, 0, 0, &audio_callback, nullptr };
     SDL_OpenAudio(&spec, nullptr);
-    for (; optind < argc; optind++) {
-        printf(">>> %s\n", argv[optind]);
-        if (!vgm.init(argv[optind], loop_count)) return 1;
-        SDL_PauseAudio(0);
-        while (!vgm.done()) {
-            SDL_Event event;
-            while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_QUIT) goto exit;
-            }
-            SDL_Delay(100);
-        }
-        SDL_PauseAudio(1);
-    }
-exit:
+    SDL_PauseAudio(0);
+    while (!vgm.done()) SDL_Delay(100);
     SDL_CloseAudio();
     SDL_Quit();
     return 0;
